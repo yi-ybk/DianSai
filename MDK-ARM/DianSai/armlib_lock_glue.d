@@ -1,0 +1,15 @@
+diansai\armlib_lock_glue.o: armlib_lock_glue.c
+diansai\armlib_lock_glue.o: ../Drivers/CMSIS/Include/cmsis_compiler.h
+diansai\armlib_lock_glue.o: E:\keil5\ARM\ARMCC\Bin\..\include\stdint.h
+diansai\armlib_lock_glue.o: ../Drivers/CMSIS/Include/cmsis_armcc.h
+diansai\armlib_lock_glue.o: stm32_lock.h
+diansai\armlib_lock_glue.o: E:\keil5\ARM\ARMCC\Bin\..\include\stddef.h
+diansai\armlib_lock_glue.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/FreeRTOS.h
+diansai\armlib_lock_glue.o: ../Core/Inc/FreeRTOSConfig.h
+diansai\armlib_lock_glue.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/projdefs.h
+diansai\armlib_lock_glue.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/portable.h
+diansai\armlib_lock_glue.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/deprecated_definitions.h
+diansai\armlib_lock_glue.o: ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F/portmacro.h
+diansai\armlib_lock_glue.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/mpu_wrappers.h
+diansai\armlib_lock_glue.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/task.h
+diansai\armlib_lock_glue.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/list.h

@@ -1,7 +1,11 @@
 #pragma once
 
+#include "FreeRTOS.h"
+#include "task.h"
 #include "main.h"
-#include "tasks.h"
-#include "imu_driver.h"
+#include "cmsis_os.h"
 
-void RobotInit(void);
+void robotInit(void);
+void ImuParseTask(void *argument);
+
+void TestTask(void *argument);
