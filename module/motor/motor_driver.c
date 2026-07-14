@@ -4,6 +4,8 @@
  * @details 封装PWM输出、舵机脉宽换算、编码器同步和对象式方法绑定。
  */
 #include "motor_driver.h"
+#include "user_lib_math.h"
+#include <math.h>
 #include <string.h>
 
 #define MOTOR_DEFAULT_MIN_DUTY 0.0f              /**< 默认最小占空比 */
@@ -21,9 +23,6 @@ static bool MotorTb6612ConfigIsValid(const MotorInitConfig_t *config);
 static bool MotorEncoderConfigIsValid(const MotorInitConfig_t *config);
 static void MotorNormalizeConfig(MotorInitConfig_t *config);
 static bool MotorRegisterPwm(Motor_t *motor);
-static float MotorClamp(float value, float min, float max);
-static float MotorAbs(float value);
-static MotorDirection_t MotorDirectionFromEncoder(EncoderDirection_t direction);
 static void MotorSyncEncoderData(Motor_t *motor);
 static void MotorWriteGpio(const MotorGpioConfig_t *config, GPIO_PinState state);
 static void MotorTb6612SetStandby(Motor_t *motor, bool enable);
@@ -119,7 +118,7 @@ void MotorStart(Motor_t *motor)
 
 /**
  * @brief   停止电机输出
- * @details 将PWM占空比拉为0并停止通道，同时清理方向、输出和占空比状态。
+ * @details 将PWM占空比拉为0并停止通道，同时清理电机方向和输出命令。
  * @param   motor 电机对象指针
  */
 void MotorStop(Motor_t *motor)
@@ -145,7 +144,6 @@ void MotorStop(Motor_t *motor)
 
     motor->data.enabled   = false;
     motor->data.direction = MOTOR_DIR_STOP;
-    motor->data.duty      = 0.0f;
     motor->data.output    = 0.0f;
     MotorSyncEncoderData(motor);
 }
@@ -202,9 +200,9 @@ void MotorSetAngle(Motor_t *motor, float angle)
     if (motor->init_config.type != MOTOR_TYPE_SERVO)
         return;
 
-    angle = MotorClamp(angle,
-                       motor->init_config.servo_min_angle,
-                       motor->init_config.servo_max_angle);
+    angle = float_constrain(angle,
+                            motor->init_config.servo_min_angle,
+                            motor->init_config.servo_max_angle);
 
     span_angle     = motor->init_config.servo_max_angle    - motor->init_config.servo_min_angle;
     span_pulse     = motor->init_config.servo_max_pulse_us - motor->init_config.servo_min_pulse_us;
@@ -213,38 +211,6 @@ void MotorSetAngle(Motor_t *motor, float angle)
 
     MotorApplyServoPulse(motor, pulse_width_us);
     motor->data.angle = angle;
-    motor->data.output = angle;
-}
-
-/**
- * @brief   直接通过控制脉宽控制舵机
- * @details 输入脉宽会先在配置范围内限幅，然后反算并同步内部角度缓存。
- * @param   motor 电机对象指针
- * @param   pulse_width_us 目标脉宽（us）
- */
-void MotorSetPulseWidthUs(Motor_t *motor, float pulse_width_us)
-{
-    float span_pulse;
-    float span_angle;
-    float angle;
-
-    if ((motor == NULL) || (!motor->initialized))
-        return;
-
-    if (motor->init_config.type != MOTOR_TYPE_SERVO)
-        return;
-
-    pulse_width_us = MotorClamp(pulse_width_us,
-                                motor->init_config.servo_min_pulse_us,
-                                motor->init_config.servo_max_pulse_us);
-
-    span_pulse = motor->init_config.servo_max_pulse_us - motor->init_config.servo_min_pulse_us;
-    span_angle = motor->init_config.servo_max_angle    - motor->init_config.servo_min_angle;
-    angle = motor->init_config.servo_min_angle +
-            ((pulse_width_us - motor->init_config.servo_min_pulse_us) * span_angle / span_pulse);
-
-    MotorApplyServoPulse(motor, pulse_width_us);
-    motor->data.angle  = angle;
     motor->data.output = angle;
 }
 
@@ -266,47 +232,8 @@ void MotorUpdate(Motor_t *motor, float dt_s)
 }
 
 /**
- * @brief   复位编码器数据
- * @param   motor 电机对象指针
- */
-void MotorResetEncoder(Motor_t *motor)
-{
-    if ((motor == NULL) || (motor->encoder == NULL))
-        return;
-
-    EncoderReset(motor->encoder);
-    MotorSyncEncoderData(motor);
-}
-
-/**
- * @brief   获取编码器累计计数
- * @param   motor 电机对象指针
- * @return  int32_t 编码器累计计数值；对象或编码器无效时返回0
- */
-int32_t MotorGetEncoderCount(Motor_t *motor)
-{
-    if ((motor == NULL) || (motor->encoder == NULL))
-        return 0;
-
-    return EncoderGetCount(motor->encoder);
-}
-
-/**
- * @brief   获取编码器方向
- * @param   motor 电机对象指针
- * @return  MotorDirection_t 当前编码器方向；对象或编码器无效时返回MOTOR_DIR_STOP
- */
-MotorDirection_t MotorGetEncoderDirection(Motor_t *motor)
-{
-    if ((motor == NULL) || (motor->encoder == NULL))
-        return MOTOR_DIR_STOP;
-
-    return MotorDirectionFromEncoder(EncoderGetDirection(motor->encoder));
-}
-
-/**
  * @brief   获取电机运行数据
- * @details 返回前会先同步一次编码器相关字段，保证data内容尽可能新鲜。
+ * @details 返回前会先同步一次电机实际转速，保证data内容尽可能新鲜。
  * @param   motor 电机对象指针
  * @param   data 输出结构体指针
  */
@@ -328,18 +255,14 @@ static void MotorBindMethods(Motor_t *motor)
     if (motor == NULL)
         return;
 
-    motor->init                  = MotorInit;
-    motor->start                 = MotorStart;
-    motor->stop                  = MotorStop;
-    motor->set_output            = MotorSetOutput;
-    motor->set_speed             = MotorSetSpeed;
-    motor->set_angle             = MotorSetAngle;
-    motor->set_pulse_width_us    = MotorSetPulseWidthUs;
-    motor->update                = MotorUpdate;
-    motor->reset_encoder         = MotorResetEncoder;
-    motor->get_encoder_count     = MotorGetEncoderCount;
-    motor->get_encoder_direction = MotorGetEncoderDirection;
-    motor->get_data              = MotorGetData;
+    motor->init       = MotorInit;
+    motor->start      = MotorStart;
+    motor->stop       = MotorStop;
+    motor->set_output = MotorSetOutput;
+    motor->set_speed  = MotorSetSpeed;
+    motor->set_angle  = MotorSetAngle;
+    motor->update     = MotorUpdate;
+    motor->get_data   = MotorGetData;
 }
 
 /**
@@ -505,55 +428,8 @@ static bool MotorRegisterPwm(Motor_t *motor)
 }
 
 /**
- * @brief   浮点限幅
- * @param   value 输入值
- * @param   min 下限
- * @param   max 上限
- * @return  float 限幅后的结果
- */
-static float MotorClamp(float value, float min, float max)
-{
-    if (value < min)
-        return min;
-
-    if (value > max)
-        return max;
-
-    return value;
-}
-
-/**
- * @brief   取绝对值
- * @param   value 输入值
- * @return  float 绝对值结果
- */
-static float MotorAbs(float value)
-{
-    if (value < 0.0f)
-        return -value;
-
-    return value;
-}
-
-/**
- * @brief   将编码器方向转换为电机方向
- * @param   direction 编码器方向枚举
- * @return  MotorDirection_t 对应的电机方向枚举
- */
-static MotorDirection_t MotorDirectionFromEncoder(EncoderDirection_t direction)
-{
-    if (direction == ENCODER_DIR_FORWARD)
-        return MOTOR_DIR_FORWARD;
-
-    if (direction == ENCODER_DIR_REVERSE)
-        return MOTOR_DIR_REVERSE;
-
-    return MOTOR_DIR_STOP;
-}
-
-/**
  * @brief   同步编码器数据到电机对象缓存
- * @details 当未绑定编码器时会清零相关字段，避免读取到历史残留值。
+ * @details 对外只同步电机实际转速，不透传编码器原始计数和方向。
  * @param   motor 电机对象指针
  */
 static void MotorSyncEncoderData(Motor_t *motor)
@@ -565,22 +441,12 @@ static void MotorSyncEncoderData(Motor_t *motor)
 
     if (motor->encoder == NULL)
     {
-        motor->data.encoder_enabled   = false;
-        motor->data.encoder_direction = MOTOR_DIR_STOP;
-        motor->data.encoder_count     = 0;
-        motor->data.encoder_delta     = 0;
-        motor->data.encoder_speed_cps = 0.0f;
-        motor->data.encoder_speed_rps = 0.0f;
+        motor->data.speed_rps = 0.0f;
         return;
     }
 
     EncoderGetData(motor->encoder, &encoder_data);
-    motor->data.encoder_enabled   = encoder_data.enabled;
-    motor->data.encoder_direction = MotorDirectionFromEncoder(encoder_data.direction);
-    motor->data.encoder_count     = encoder_data.count;
-    motor->data.encoder_delta     = encoder_data.delta;
-    motor->data.encoder_speed_cps = encoder_data.speed_cps;
-    motor->data.encoder_speed_rps = encoder_data.speed_rps;
+    motor->data.speed_rps = encoder_data.speed_rps;
 }
 
 /**
@@ -644,11 +510,11 @@ static void MotorApplyReductionOutput(Motor_t *motor, float speed)
     float duty;
 
     if ((motor->init_config.use_reverse_pwm) || (motor->init_config.use_tb6612))
-        speed = MotorClamp(speed, -1.0f, 1.0f);
+        speed = float_constrain(speed, -1.0f, 1.0f);
     else
-        speed = MotorClamp(speed, 0.0f, 1.0f);
+        speed = float_constrain(speed, 0.0f, 1.0f);
 
-    magnitude = MotorAbs(speed);
+    magnitude = fabsf(speed);
     if (magnitude <= 0.0f)
         duty = 0.0f;
     else
@@ -693,10 +559,8 @@ static void MotorApplyReductionOutput(Motor_t *motor, float speed)
         motor->data.direction = MOTOR_DIR_STOP;
     }
 
-    motor->data.output         = speed;
-    motor->data.duty           = duty;
-    motor->data.angle          = 0.0f;
-    motor->data.pulse_width_us = 0.0f;
+    motor->data.output = speed;
+    motor->data.angle  = 0.0f;
 }
 
 /**
@@ -712,7 +576,5 @@ static void MotorApplyServoPulse(Motor_t *motor, float pulse_width_us)
     pulse_width_s = pulse_width_us / MOTOR_US_PER_SECOND;
     PWMSetPulseWidth(motor->pwm, pulse_width_s);
 
-    motor->data.direction      = MOTOR_DIR_STOP;
-    motor->data.duty           = PWMGetDutyRatio(motor->pwm);
-    motor->data.pulse_width_us = pulse_width_us;
+    motor->data.direction = MOTOR_DIR_STOP;
 }

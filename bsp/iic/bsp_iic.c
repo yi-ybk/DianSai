@@ -3,7 +3,6 @@
 
 static uint8_t idx = 0; // 配合中断以及初始化
 static IICInstance iic_instance_pool[MX_IIC_SLAVE_CNT];
-static IICInstance iic_instance_pool[MX_IIC_SLAVE_CNT];
 static IICInstance *iic_instance[MX_IIC_SLAVE_CNT] = {NULL};
 
 static uint8_t IICConfigIsValid(const IIC_Init_Config_s *conf);
@@ -105,6 +104,7 @@ void IICTransmit(IICInstance *iic, uint8_t *data, uint16_t size, IIC_Seq_Mode_e 
         return;
     }
 
+#ifdef HAL_I2C_MODULE_ENABLED
     switch (iic->work_mode)
     {
     case IIC_BLOCK_MODE:
@@ -129,6 +129,7 @@ void IICTransmit(IICInstance *iic, uint8_t *data, uint16_t size, IIC_Seq_Mode_e 
         while (1)
             ; // 未知传输模式, 程序停止
     }
+#endif
 }
 
 void IICReceive(IICInstance *iic, uint8_t *data, uint16_t size, IIC_Seq_Mode_e seq_mode)
@@ -153,6 +154,7 @@ void IICReceive(IICInstance *iic, uint8_t *data, uint16_t size, IIC_Seq_Mode_e s
     iic->rx_buffer = data;
     iic->rx_len = size;
 
+#ifdef HAL_I2C_MODULE_ENABLED
     switch (iic->work_mode)
     {
     case IIC_BLOCK_MODE:
@@ -177,12 +179,11 @@ void IICReceive(IICInstance *iic, uint8_t *data, uint16_t size, IIC_Seq_Mode_e s
         while (1)
             ; // 未知传输模式, 程序停止
     }
+#endif
 }
 
 void IICAccessMem(IICInstance *iic, uint16_t mem_addr, uint8_t *data, uint16_t size, IIC_Mem_Mode_e mem_mode, uint8_t mem8bit_flag)
 {
-    uint16_t bit_flag = mem8bit_flag ? I2C_MEMADD_SIZE_8BIT : I2C_MEMADD_SIZE_16BIT;
-
     if ((iic == NULL) || (data == NULL) || (size == 0U))
         return;
 
@@ -191,6 +192,9 @@ void IICAccessMem(IICInstance *iic, uint16_t mem_addr, uint8_t *data, uint16_t s
         (void)IICSoftAccessMem(iic, mem_addr, data, size, mem_mode, mem8bit_flag);
         return;
     }
+
+#ifdef HAL_I2C_MODULE_ENABLED
+    uint16_t bit_flag = mem8bit_flag ? I2C_MEMADD_SIZE_8BIT : I2C_MEMADD_SIZE_16BIT;
 
     if (mem_mode == IIC_WRITE_MEM)
     {
@@ -205,8 +209,10 @@ void IICAccessMem(IICInstance *iic, uint16_t mem_addr, uint8_t *data, uint16_t s
         while (1)
             ; // 未知模式, 程序停止
     }
+#endif
 }
 
+#ifdef HAL_I2C_MODULE_ENABLED
 /**
  * @brief IIC接收完成回调函数
  *
@@ -238,6 +244,7 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
     HAL_I2C_MasterRxCpltCallback(hi2c);
 }
+#endif
 
 static uint8_t IICConfigIsValid(const IIC_Init_Config_s *conf)
 {
@@ -247,10 +254,14 @@ static uint8_t IICConfigIsValid(const IIC_Init_Config_s *conf)
     if (conf->bus_mode == IIC_BUS_SOFTWARE)
         return IICSoftConfigIsValid(&conf->soft_config);
 
+#ifdef HAL_I2C_MODULE_ENABLED
     if ((conf->bus_mode != IIC_BUS_HARDWARE) || (conf->handle == NULL))
         return 0U;
 
     return 1U;
+#else
+    return 0U;
+#endif
 }
 
 static uint8_t IICSoftConfigIsValid(const IIC_Soft_Config_s *conf)

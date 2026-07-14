@@ -222,11 +222,13 @@ static KeyEvent_t KeyStateToEvent(KeyState_t state)
  */
 static void KeySyncData(Key_t *key)
 {
+    GPIO_PinState pin_state;
+
     if ((key == NULL) || (key->gpio == NULL))
         return;
 
-    key->data.pin_state = GPIORead(key->gpio);
-    key->data.state     = KeyPinStateToState(key, key->data.pin_state);
+    pin_state = GPIORead(key->gpio);
+    key->data.state = KeyPinStateToState(key, pin_state);
 }
 
 /**
@@ -237,6 +239,7 @@ static void KeyGpioCallback(GPIOInstance *gpio)
 {
     Key_t *key;
     KeyEvent_t event;
+    KeyState_t previous_state;
     uint32_t now_tick;
 
     if ((gpio == NULL) || (gpio->id == NULL))
@@ -253,7 +256,11 @@ static void KeyGpioCallback(GPIOInstance *gpio)
         return;
     }
 
+    previous_state = key->data.state;
     KeySyncData(key);
+    if (key->data.state == previous_state)
+        return;
+
     event = KeyStateToEvent(key->data.state);
 
     key->data.last_event      = event;

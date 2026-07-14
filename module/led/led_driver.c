@@ -212,9 +212,11 @@ static LedState_t LedPinStateToState(const Led_t *led, GPIO_PinState pin_state)
  */
 static void LedSyncData(Led_t *led)
 {
+    GPIO_PinState pin_state;
+
     if ((led == NULL) || (led->gpio == NULL))
         return;
 
-    led->data.pin_state = GPIORead(led->gpio);
-    led->data.state     = LedPinStateToState(led, led->data.pin_state);
+    pin_state = GPIORead(led->gpio);
+    led->data.state = LedPinStateToState(led, pin_state);
 }

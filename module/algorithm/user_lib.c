@@ -12,8 +12,9 @@
  ******************************************************************************
  */
 #include "stdlib.h"
-#include "memory.h"
+#include "string.h"
 #include "user_lib.h"
+#include "user_lib_math.h"
 #include "math.h"
 #include "main.h"
 
@@ -103,6 +104,17 @@ float float_constrain(float Value, float minValue, float maxValue)
         return maxValue;
     else
         return Value;
+}
+
+float angle_wrap_180(float angle)
+{
+    while (angle >= 180.0f)
+        angle -= 360.0f;
+
+    while (angle < -180.0f)
+        angle += 360.0f;
+
+    return angle;
 }
 
 // 限幅函数

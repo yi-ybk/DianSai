@@ -1,6 +1,7 @@
 #ifndef BSP_RC_H
 #define BSP_RC_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "main.h"
 
@@ -67,6 +68,19 @@ void USARTServiceInit(USARTInstance *_instance);
  * @param send_size how many bytes to send
  */
 void USARTSend(USARTInstance *_instance, uint8_t *send_buf, uint16_t send_size,USART_TRANSFER_MODE mode);
+
+/**
+ * @brief 阻塞发送串口数据，并返回底层发送结果
+ * @param _instance 串口实例
+ * @param send_buf 待发送数据缓冲区
+ * @param send_size 发送字节数
+ * @param timeout_ms 超时时间，单位ms
+ * @return true发送成功，false发送失败
+ */
+bool USARTSendBlocking(USARTInstance *_instance,
+                       const uint8_t *send_buf,
+                       uint16_t send_size,
+                       uint32_t timeout_ms);
 
 /**
  * @brief 判断串口是否准备好,用于连续或异步的IT/DMA发送

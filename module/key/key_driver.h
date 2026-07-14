@@ -49,7 +49,6 @@ typedef struct
 {
     KeyState_t state;             /**< 当前按键逻辑状态 */
     KeyEvent_t last_event;        /**< 最近一次按键事件 */
-    GPIO_PinState pin_state;      /**< 当前GPIO实际电平 */
     uint32_t event_count;         /**< 事件总次数 */
     uint32_t press_count;         /**< 按下事件次数 */
     uint32_t release_count;       /**< 释放事件次数 */

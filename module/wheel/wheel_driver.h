@@ -47,13 +47,9 @@ typedef struct
     float angular_speed_radps;            /**< 实际角速度(rad/s) */
     float wheel_speed_rps;                /**< 轮子转速(rev/s) */
 
-    float motor_output;                   /**< 下发到电机的输出 */
-    float pid_output;                     /**< PID计算输出 */
     float distance_m;                     /**< 累计行驶距离(m) */
     float angle_rad;                      /**< 累计轮子转角(rad) */
 
-    int32_t encoder_count;                /**< 编码器累计计数 */
-    int32_t encoder_delta;                /**< 本次编码器增量 */
     uint32_t update_count;                /**< 更新次数 */
 } WheelData_t;
 
@@ -72,7 +68,6 @@ struct Wheel
     bool (*init)(Wheel_t *wheel, const WheelInitConfig_t *config);
     void (*start)(Wheel_t *wheel);
     void (*stop)(Wheel_t *wheel);
-    void (*set_output)(Wheel_t *wheel, float output);
     void (*set_linear_speed)(Wheel_t *wheel, float speed_mps);
     void (*set_angular_speed)(Wheel_t *wheel, float speed_radps);
     void (*update)(Wheel_t *wheel, float dt_s);
@@ -86,8 +81,6 @@ bool WheelInit(Wheel_t *wheel, const WheelInitConfig_t *config);
 void WheelStart(Wheel_t *wheel);
 /** @brief 停止驱动轮 */
 void WheelStop(Wheel_t *wheel);
-/** @brief 设置开环输出 */
-void WheelSetOutput(Wheel_t *wheel, float output);
 /** @brief 设置目标线速度 */
 void WheelSetLinearSpeed(Wheel_t *wheel, float speed_mps);
 /** @brief 设置目标角速度 */
@@ -99,13 +92,12 @@ void WheelResetOdometry(Wheel_t *wheel);
 /** @brief 获取驱动轮运行数据 */
 void WheelGetData(Wheel_t *wheel, WheelData_t *data);
 
-#define WHEEL_OBJECT_DEFAULT                        \
-        .init               = WheelInit,            \
-        .start              = WheelStart,           \
-        .stop               = WheelStop,            \
-        .set_output         = WheelSetOutput,       \
-        .set_linear_speed   = WheelSetLinearSpeed,  \
-        .set_angular_speed  = WheelSetAngularSpeed, \
-        .update             = WheelUpdate,          \
-        .reset_odometry     = WheelResetOdometry,   \
-        .get_data           = WheelGetData
+#define WHEEL_OBJECT_DEFAULT                       \
+        .init              = WheelInit,            \
+        .start             = WheelStart,           \
+        .stop              = WheelStop,            \
+        .set_linear_speed  = WheelSetLinearSpeed,  \
+        .set_angular_speed = WheelSetAngularSpeed, \
+        .update            = WheelUpdate,          \
+        .reset_odometry    = WheelResetOdometry,   \
+        .get_data          = WheelGetData

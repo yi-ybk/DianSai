@@ -4,12 +4,12 @@
  * @details 实现通用位置式PID计算、限幅、参数更新和对象式方法绑定。
  */
 #include "pid.h"
+#include "user_lib_math.h"
+#include <math.h>
 #include <string.h>
 
 static void PidBindMethods(Pid_t *pid);
 static bool PidConfigIsValid(const PidInitConfig_t *config);
-static float PidAbs(float value);
-static float PidClamp(float value, float min, float max);
 static float PidApplyOutputLimit(Pid_t *pid, float output);
 static void PidApplyIntegralLimit(Pid_t *pid);
 
@@ -68,7 +68,7 @@ float PidCalculate(Pid_t *pid, float feedback, float target, float dt_s)
     pid->data.dt_s     = dt_s;
     pid->data.error    = error;
     pid->data.in_deadband = ((pid->init_config.deadband > 0.0f) &&
-                             (PidAbs(error) <= pid->init_config.deadband));
+                             (fabsf(error) <= pid->init_config.deadband));
 
     if (pid->data.in_deadband)
     {
@@ -247,34 +247,6 @@ static bool PidConfigIsValid(const PidInitConfig_t *config)
 }
 
 /**
- * @brief   计算浮点数绝对值
- * @param   value 输入值
- * @return  float 绝对值
- */
-static float PidAbs(float value)
-{
-    return (value >= 0.0f) ? value : -value;
-}
-
-/**
- * @brief   浮点数限幅
- * @param   value 输入值
- * @param   min 最小值
- * @param   max 最大值
- * @return  float 限幅后的值
- */
-static float PidClamp(float value, float min, float max)
-{
-    if (value > max)
-        return max;
-
-    if (value < min)
-        return min;
-
-    return value;
-}
-
-/**
  * @brief   应用输出限幅
  * @param   pid PID对象指针
  * @param   output 输入输出值
@@ -285,7 +257,9 @@ static float PidApplyOutputLimit(Pid_t *pid, float output)
     if ((pid == NULL) || (!pid->init_config.enable_output_limit))
         return output;
 
-    return PidClamp(output, pid->init_config.output_min, pid->init_config.output_max);
+    return float_constrain(output,
+                           pid->init_config.output_min,
+                           pid->init_config.output_max);
 }
 
 /**
@@ -300,9 +274,9 @@ static void PidApplyIntegralLimit(Pid_t *pid)
     if (!pid->init_config.enable_integral_limit)
         return;
 
-    pid->data.i_out = PidClamp(pid->data.i_out,
-                               pid->init_config.integral_min,
-                               pid->init_config.integral_max);
+    pid->data.i_out = float_constrain(pid->data.i_out,
+                                      pid->init_config.integral_min,
+                                      pid->init_config.integral_max);
 
     if (pid->init_config.ki != 0.0f)
         pid->data.integral = pid->data.i_out / pid->init_config.ki;

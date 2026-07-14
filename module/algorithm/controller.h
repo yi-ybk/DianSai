@@ -15,28 +15,24 @@
 
 #include "main.h"
 #include "stdint.h"
-#include "memory.h"
+#include "string.h"
 #include "stdlib.h"
 #include "bsp_dwt.h"
 #include "arm_math.h"
 #include <math.h>
 
-#ifndef abs
-#define abs(x) ((x > 0) ? x : -x)
-#endif
-
 // PID 优化环节使能标志位,通过位与可以判断启用的优化环节;也可以改成位域的形式
 typedef enum
 {
-    PID_IMPROVE_NONE = 0b00000000,                // 0000 0000
-    PID_Integral_Limit = 0b00000001,              // 0000 0001
-    PID_Derivative_On_Measurement = 0b00000010,   // 0000 0010
-    PID_Trapezoid_Intergral = 0b00000100,         // 0000 0100
-    PID_Proportional_On_Measurement = 0b00001000, // 0000 1000
-    PID_OutputFilter = 0b00010000,                // 0001 0000
-    PID_ChangingIntegrationRate = 0b00100000,     // 0010 0000
-    PID_DerivativeFilter = 0b01000000,            // 0100 0000
-    PID_ErrorHandle = 0b10000000,                 // 1000 0000
+    PID_IMPROVE_NONE = 0x00U,                // 0000 0000
+    PID_Integral_Limit = 0x01U,              // 0000 0001
+    PID_Derivative_On_Measurement = 0x02U,   // 0000 0010
+    PID_Trapezoid_Intergral = 0x04U,         // 0000 0100
+    PID_Proportional_On_Measurement = 0x08U, // 0000 1000
+    PID_OutputFilter = 0x10U,                // 0001 0000
+    PID_ChangingIntegrationRate = 0x20U,     // 0010 0000
+    PID_DerivativeFilter = 0x40U,            // 0100 0000
+    PID_ErrorHandle = 0x80U,                 // 1000 0000
 } PID_Improvement_e;
 
 /* PID 报错类型枚举*/

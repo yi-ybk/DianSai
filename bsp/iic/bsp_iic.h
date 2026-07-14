@@ -8,6 +8,12 @@
 #include "stm32f4xx_hal.h"
 #include "stdint.h"
 
+#ifdef HAL_I2C_MODULE_ENABLED
+typedef I2C_HandleTypeDef IIC_HardwareHandle_t;
+#else
+typedef void IIC_HardwareHandle_t;
+#endif
+
 #define IIC_DEVICE_CNT 2   // C板引出了I2C2和I2C3
 #define MX_IIC_SLAVE_CNT 8 // 最大从机数目,根据需要修改
 
@@ -61,7 +67,7 @@ typedef struct
 /* i2c实例 */
 typedef struct iic_temp_s
 {
-    I2C_HandleTypeDef *handle; // i2c handle
+    IIC_HardwareHandle_t *handle; // 硬件I2C句柄,HAL I2C关闭时仅作为不透明指针
     uint8_t dev_address;       // 暂时只支持7位地址(还有一位是读写位)
 
     IIC_Bus_Mode_e bus_mode;               // 总线类型
@@ -77,7 +83,7 @@ typedef struct iic_temp_s
 /* I2C 初始化结构体配置 */
 typedef struct
 {
-    I2C_HandleTypeDef *handle;       // i2c handle,软件IIC模式可为NULL
+    IIC_HardwareHandle_t *handle;    // 硬件I2C句柄,软件IIC模式可为NULL
     uint8_t dev_address;             // 暂时只支持7位地址(还有一位是读写位),注意不需要左移
     IIC_Bus_Mode_e bus_mode;         // 总线类型,未显式配置时默认为硬件I2C
     IIC_Work_Mode_e work_mode;       // 工作模式

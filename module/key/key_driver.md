@@ -49,14 +49,14 @@ bsp/gpio/bsp_gpio.h
 | 下降沿 | `GPIO_EXTI_MODE_FALLING` |
 | 上升沿和下降沿 | `GPIO_EXTI_MODE_RISING_FALLING` |
 
-模块在每次 EXTI 中断中读取当前引脚电平，并根据 `active_state` 生成事件。边沿与事件的对应关系如下：
+模块在每次 EXTI 中断中读取当前引脚电平，仅在按键逻辑状态发生变化时生成事件。边沿与事件的对应关系如下：
 
 | `active_state` | 上升沿事件 | 下降沿事件 |
 | --- | --- | --- |
 | `GPIO_PIN_SET`，高电平按下 | `KEY_EVENT_PRESS` | `KEY_EVENT_RELEASE` |
 | `GPIO_PIN_RESET`，低电平按下 | `KEY_EVENT_RELEASE` | `KEY_EVENT_PRESS` |
 
-因此，单边沿配置只会收到该边沿对应的一类事件。例如高电平按下的 PA0 使用下拉和 `GPIO_EXTI_MODE_RISING` 时，按下只产生一次 `KEY_EVENT_PRESS`；松开是下降沿，不会产生 `KEY_EVENT_RELEASE`。需要识别完整的按下和松开动作时，CubeMX 和 `exti_mode` 都必须配置为双边沿。
+因此，单边沿配置只会收到该边沿对应的一类事件。例如高电平按下的 PA0 使用下拉和 `GPIO_EXTI_MODE_RISING` 时，按下只产生 `KEY_EVENT_PRESS`，但松开后驱动无法通过中断恢复为释放状态。需要连续识别按下动作或识别完整的按下和松开动作时，CubeMX 和 `exti_mode` 都必须配置为双边沿。
 
 机械抖动或引脚电平在 ISR 读取前发生变化时，事件可能与触发边沿不一致。`debounce_ms` 可以过滤短时间内的重复边沿，但不会延迟后再次确认电平。
 
@@ -179,7 +179,6 @@ user_key.get_data(&user_key, &data);
 | --- | --- |
 | `state` | 当前逻辑状态 |
 | `last_event` | 最近一次按键事件 |
-| `pin_state` | 当前 GPIO 实际电平 |
 | `event_count` | 有效事件总数 |
 | `press_count` | 按下事件次数 |
 | `release_count` | 释放事件次数 |

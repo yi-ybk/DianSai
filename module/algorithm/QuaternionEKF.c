@@ -15,6 +15,7 @@
  ******************************************************************************
  */
 #include "QuaternionEKF.h"
+#include "user_lib_math.h"
 
 QEKF_INS_t QEKF_INS;
 
@@ -199,8 +200,10 @@ void IMU_QuaternionEKF_Update(float gx, float gy, float gz, float ax, float ay, 
 
     // 利用四元数反解欧拉角
     QEKF_INS.Yaw = atan2f(2.0f * (QEKF_INS.q[0] * QEKF_INS.q[3] + QEKF_INS.q[1] * QEKF_INS.q[2]), 2.0f * (QEKF_INS.q[0] * QEKF_INS.q[0] + QEKF_INS.q[1] * QEKF_INS.q[1]) - 1.0f) * 57.295779513f;
-    QEKF_INS.Pitch = atan2f(2.0f * (QEKF_INS.q[0] * QEKF_INS.q[1] + QEKF_INS.q[2] * QEKF_INS.q[3]), 2.0f * (QEKF_INS.q[0] * QEKF_INS.q[0] + QEKF_INS.q[3] * QEKF_INS.q[3]) - 1.0f) * 57.295779513f;
-    QEKF_INS.Roll = asinf(-2.0f * (QEKF_INS.q[1] * QEKF_INS.q[3] - QEKF_INS.q[0] * QEKF_INS.q[2])) * 57.295779513f;
+    QEKF_INS.Roll = atan2f(2.0f * (QEKF_INS.q[0] * QEKF_INS.q[1] + QEKF_INS.q[2] * QEKF_INS.q[3]), 2.0f * (QEKF_INS.q[0] * QEKF_INS.q[0] + QEKF_INS.q[3] * QEKF_INS.q[3]) - 1.0f) * 57.295779513f;
+    QEKF_INS.Pitch = asinf(float_constrain(-2.0f * (QEKF_INS.q[1] * QEKF_INS.q[3] - QEKF_INS.q[0] * QEKF_INS.q[2]),
+                                            -1.0f,
+                                            1.0f)) * 57.295779513f;
 
     // get Yaw total, yaw数据可能会超过360,处理一下方便其他功能使用(如小陀螺)
     if (QEKF_INS.Yaw - QEKF_INS.YawAngleLast > 180.0f)
@@ -350,7 +353,9 @@ static void IMU_QuaternionEKF_xhatUpdate(KalmanFilter_t *kf)
     // 计算预测值和各个轴的方向余弦
     for (uint8_t i = 0; i < 3; ++i)
     {
-        QEKF_INS.OrientationCosine[i] = acosf(fabsf(kf->temp_vector_data[i]));
+        QEKF_INS.OrientationCosine[i] = acosf(float_constrain(fabsf(kf->temp_vector_data[i]),
+                                                              0.0f,
+                                                              1.0f));
     }
 
     // 利用加速度计数据修正

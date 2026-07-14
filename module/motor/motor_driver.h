@@ -80,20 +80,12 @@ typedef struct
 /** @brief 电机运行数据 */
 typedef struct
 {
-    MotorType_t type;                   /**< 电机类型 */
-    bool enabled;                       /**< 当前是否使能 */
-    MotorDirection_t direction;         /**< 当前驱动方向 */
-    float output;                       /**< 当前输出值 */
-    float duty;                         /**< 当前占空比 */
-    float angle;                        /**< 当前角度（舵机模式） */
-    float pulse_width_us;               /**< 当前脉宽(us) */
-
-    bool encoder_enabled;               /**< 编码器是否启用 */
-    MotorDirection_t encoder_direction; /**< 编码器方向 */
-    int32_t encoder_count;              /**< 编码器累计计数 */
-    int32_t encoder_delta;              /**< 编码器增量 */
-    float encoder_speed_cps;            /**< 速度(count/s) */
-    float encoder_speed_rps;            /**< 速度(rev/s) */
+    MotorType_t type;           /**< 电机类型 */
+    bool enabled;               /**< 当前是否使能 */
+    MotorDirection_t direction; /**< 当前驱动方向 */
+    float output;               /**< 当前输出命令 */
+    float angle;                /**< 当前目标角度（舵机模式） */
+    float speed_rps;            /**< 当前反馈转速(rev/s)，未绑定编码器时为0 */
 } MotorData_t;
 
 typedef struct Motor Motor_t;
@@ -115,11 +107,7 @@ struct Motor
     void (*set_output)(Motor_t *motor, float output);
     void (*set_speed)(Motor_t *motor, float speed);
     void (*set_angle)(Motor_t *motor, float angle);
-    void (*set_pulse_width_us)(Motor_t *motor, float pulse_width_us);
     void (*update)(Motor_t *motor, float dt_s);
-    void (*reset_encoder)(Motor_t *motor);
-    int32_t (*get_encoder_count)(Motor_t *motor);
-    MotorDirection_t (*get_encoder_direction)(Motor_t *motor);
     void (*get_data)(Motor_t *motor, MotorData_t *data);
 };
 
@@ -135,29 +123,17 @@ void MotorSetOutput(Motor_t *motor, float output);
 void MotorSetSpeed(Motor_t *motor, float speed);
 /** @brief 设置舵机角度 */
 void MotorSetAngle(Motor_t *motor, float angle);
-/** @brief 设置舵机脉宽(us) */
-void MotorSetPulseWidthUs(Motor_t *motor, float pulse_width_us);
 /** @brief 刷新电机和编码器数据 */
 void MotorUpdate(Motor_t *motor, float dt_s);
-/** @brief 复位编码器 */
-void MotorResetEncoder(Motor_t *motor);
-/** @brief 获取编码器计数 */
-int32_t MotorGetEncoderCount(Motor_t *motor);
-/** @brief 获取编码器方向 */
-MotorDirection_t MotorGetEncoderDirection(Motor_t *motor);
 /** @brief 获取电机数据 */
 void MotorGetData(Motor_t *motor, MotorData_t *data);
 
-#define MOTOR_OBJECT_DEFAULT                               \
-        .init = MotorInit,                                 \
-        .start = MotorStart,                               \
-        .stop = MotorStop,                                 \
-        .set_output = MotorSetOutput,                      \
-        .set_speed = MotorSetSpeed,                        \
-        .set_angle = MotorSetAngle,                        \
-        .set_pulse_width_us = MotorSetPulseWidthUs,        \
-        .update = MotorUpdate,                             \
-        .reset_encoder = MotorResetEncoder,                \
-        .get_encoder_count = MotorGetEncoderCount,         \
-        .get_encoder_direction = MotorGetEncoderDirection, \
-        .get_data = MotorGetData
+#define MOTOR_OBJECT_DEFAULT          \
+        .init       = MotorInit,      \
+        .start      = MotorStart,     \
+        .stop       = MotorStop,      \
+        .set_output = MotorSetOutput, \
+        .set_speed  = MotorSetSpeed,  \
+        .set_angle  = MotorSetAngle,  \
+        .update     = MotorUpdate,    \
+        .get_data   = MotorGetData

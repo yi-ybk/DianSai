@@ -4,6 +4,7 @@
  * @details 将减速电机、编码器反馈和可选速度PID组合为轮级控制对象，完成速度、角速度和里程换算。
  */
 #include "wheel_driver.h"
+#include "user_lib_math.h"
 #include <string.h>
 
 #define WHEEL_DEFAULT_RATIO 1.0f              /**< 默认编码器到轮子传动比 */
@@ -15,7 +16,6 @@
 static void WheelBindMethods(Wheel_t *wheel);
 static bool WheelConfigIsValid(const WheelInitConfig_t *config);
 static void WheelNormalizeConfig(WheelInitConfig_t *config);
-static float WheelClamp(float value, float min, float max);
 static float WheelGetDirectionSign(const Wheel_t *wheel);
 static float WheelLinearToAngular(const Wheel_t *wheel, float speed_mps);
 static float WheelAngularToLinear(const Wheel_t *wheel, float speed_radps);
@@ -91,26 +91,6 @@ void WheelStop(Wheel_t *wheel)
     wheel->data.enabled = false;
     wheel->data.target_linear_speed_mps = 0.0f;
     wheel->data.target_angular_speed_radps = 0.0f;
-    wheel->data.motor_output = 0.0f;
-    wheel->data.pid_output = 0.0f;
-    WheelSyncData(wheel);
-}
-
-/**
- * @brief   设置开环输出
- * @param   wheel 驱动轮对象指针
- * @param   output 轮子逻辑输出，通常范围为-1~1
- */
-void WheelSetOutput(Wheel_t *wheel, float output)
-{
-    if ((wheel == NULL) || (!wheel->initialized))
-        return;
-
-    wheel->data.control_mode = WHEEL_CONTROL_OPEN_LOOP;
-    wheel->data.target_linear_speed_mps = 0.0f;
-    wheel->data.target_angular_speed_radps = 0.0f;
-    wheel->data.pid_output = 0.0f;
-    WheelApplyMotorOutput(wheel, output);
     WheelSyncData(wheel);
 }
 
@@ -180,7 +160,6 @@ void WheelUpdate(Wheel_t *wheel, float dt_s)
                               wheel->data.linear_speed_mps,
                               wheel->data.target_linear_speed_mps,
                               dt_s);
-        wheel->data.pid_output = output;
         WheelApplyMotorOutput(wheel, output);
     }
 
@@ -196,11 +175,11 @@ void WheelResetOdometry(Wheel_t *wheel)
     if ((wheel == NULL) || (!wheel->initialized))
         return;
 
-    MotorResetEncoder(wheel->motor);
+    if (wheel->motor->encoder != NULL)
+        EncoderReset(wheel->motor->encoder);
+
     wheel->data.distance_m = 0.0f;
     wheel->data.angle_rad = 0.0f;
-    wheel->data.encoder_count = 0;
-    wheel->data.encoder_delta = 0;
     WheelSyncData(wheel);
 }
 
@@ -232,7 +211,6 @@ static void WheelBindMethods(Wheel_t *wheel)
     wheel->init              = WheelInit;
     wheel->start             = WheelStart;
     wheel->stop              = WheelStop;
-    wheel->set_output        = WheelSetOutput;
     wheel->set_linear_speed  = WheelSetLinearSpeed;
     wheel->set_angular_speed = WheelSetAngularSpeed;
     wheel->update            = WheelUpdate;
@@ -307,24 +285,6 @@ static void WheelNormalizeConfig(WheelInitConfig_t *config)
 }
 
 /**
- * @brief   浮点数限幅
- * @param   value 输入值
- * @param   min 最小值
- * @param   max 最大值
- * @return  float 限幅后的值
- */
-static float WheelClamp(float value, float min, float max)
-{
-    if (value < min)
-        return min;
-
-    if (value > max)
-        return max;
-
-    return value;
-}
-
-/**
  * @brief   获取轮子逻辑方向符号
  * @param   wheel 驱动轮对象指针
  * @return  float 方向符号
@@ -392,12 +352,11 @@ static void WheelApplyMotorOutput(Wheel_t *wheel, float output)
     if ((wheel == NULL) || (wheel->motor == NULL))
         return;
 
-    logical_output = WheelClamp(output,
-                                wheel->init_config.output_min,
-                                wheel->init_config.output_max);
+    logical_output = float_constrain(output,
+                                     wheel->init_config.output_min,
+                                     wheel->init_config.output_max);
     motor_output = logical_output * WheelGetDirectionSign(wheel);
     MotorSetSpeed(wheel->motor, motor_output);
-    wheel->data.motor_output = motor_output;
 }
 
 /**
@@ -406,6 +365,7 @@ static void WheelApplyMotorOutput(Wheel_t *wheel, float output)
  */
 static void WheelSyncData(Wheel_t *wheel)
 {
+    EncoderData_t encoder_data;
     MotorData_t motor_data;
     float direction_sign;
     float wheel_revolutions;
@@ -417,10 +377,7 @@ static void WheelSyncData(Wheel_t *wheel)
     MotorGetData(wheel->motor, &motor_data);
     direction_sign = WheelGetDirectionSign(wheel);
 
-    wheel->data.enabled       = motor_data.enabled;
-    wheel->data.encoder_count = motor_data.encoder_count;
-    wheel->data.encoder_delta = motor_data.encoder_delta;
-    wheel->data.motor_output  = motor_data.output;
+    wheel->data.enabled = motor_data.enabled;
 
     if (wheel->init_config.reversed)
     {
@@ -437,15 +394,16 @@ static void WheelSyncData(Wheel_t *wheel)
     }
 
     wheel->data.wheel_speed_rps =
-        (motor_data.encoder_speed_rps / wheel->init_config.encoder_to_wheel_ratio) * direction_sign;
+        (motor_data.speed_rps / wheel->init_config.encoder_to_wheel_ratio) * direction_sign;
     wheel->data.angular_speed_radps = wheel->data.wheel_speed_rps * WHEEL_TWO_PI;
     wheel->data.linear_speed_mps = wheel->data.angular_speed_radps * wheel->init_config.radius_m;
 
     if ((wheel->motor->encoder != NULL) &&
         (wheel->motor->encoder->init_config.counts_per_rev > 0.0f))
     {
+        EncoderGetData(wheel->motor->encoder, &encoder_data);
         encoder_cpr = wheel->motor->encoder->init_config.counts_per_rev;
-        wheel_revolutions = ((float)motor_data.encoder_count / encoder_cpr) /
+        wheel_revolutions = ((float)encoder_data.count / encoder_cpr) /
                             wheel->init_config.encoder_to_wheel_ratio;
         wheel_revolutions *= direction_sign;
         wheel->data.angle_rad = wheel_revolutions * WHEEL_TWO_PI;

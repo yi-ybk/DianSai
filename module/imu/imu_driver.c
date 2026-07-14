@@ -4,6 +4,8 @@
  * @details 负责接收串口发送来的IMU数据流，缓冲入环形队列并按协议帧进行解析。
  */
 #include "imu_driver.h"
+#include "QuaternionEKF.h"
+#include "user_lib_math.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "string.h"
@@ -11,6 +13,8 @@
 /* -------------------- 静态变量区 -------------------- */
 /** @brief 已经注册并初始化的IMU设备实例数组，用于在底层串口回调时通过句柄查找对应对象 */
 static Imu_t *imu_objects[DEVICE_USART_CNT];
+static Imu_t *quaternion_ekf_owner;
+static float quaternion_ekf_relative_yaw_deg;
 
 /* ------------------ 内部静态函数区 ------------------ */
 
@@ -30,7 +34,6 @@ static void ImuBindMethods(Imu_t *imu)
     imu->get_gyro  = ImuGetGyro;
     imu->get_angle = ImuGetAngle;
     imu->get_quaternion = ImuGetQuaternion;
-    imu->get_dropped_byte_count = ImuGetDroppedByteCount;
 }
 
 /**
@@ -212,8 +215,9 @@ static void ImuParseFrame(Imu_t *imu, const uint8_t *frame)
         return;
     }
 
-    memcpy(imu->data.frame, frame, frame_len);
-    imu->data.frame_len = frame_len;
+    if (imu->attitude_solver.update != NULL)
+        imu->attitude_solver.update(imu, imu->attitude_solver.context);
+
     imu->data.frame_count++;
     taskEXIT_CRITICAL();
 }
@@ -306,6 +310,9 @@ bool ImuInit(Imu_t *imu, const ImuInitConfig_t *config)
     if ((config->recv_buff_size == 0U) || (config->recv_buff_size > USART_RXBUFF_LIMIT))
         return false;
 
+    if ((imu->attitude_solver.init != NULL) && (imu->attitude_solver.update == NULL))
+        return false;
+
     ImuBindMethods(imu);
     if (imu->initialized)
         return true;
@@ -315,6 +322,7 @@ bool ImuInit(Imu_t *imu, const ImuInitConfig_t *config)
     imu->parser = config->parser;
     imu->parser_context = config->parser_context;
     imu->usart_handle = config->usart_handle;
+    imu->init_config = *config;
 
     if (!ImuProtocolIsValid(imu))
         return false;
@@ -326,9 +334,153 @@ bool ImuInit(Imu_t *imu, const ImuInitConfig_t *config)
     usart_config.usart_handle    = config->usart_handle;
     usart_config.module_callback = ImuUARTCallback;
     imu->usart = USARTRegister(&usart_config);
-    imu->initialized = (imu->usart != NULL);
+    if (imu->usart == NULL)
+        return false;
+
+    if ((imu->attitude_solver.init != NULL) &&
+        !imu->attitude_solver.init(imu, imu->attitude_solver.context))
+    {
+        return false;
+    }
+
+    if ((config->device_init != NULL) &&
+        !config->device_init(imu, config->device_context))
+    {
+        return false;
+    }
+
+    imu->initialized = true;
 
     return imu->initialized;
+}
+
+bool ImuQuaternionEkfSolverInit(Imu_t *imu, void *context)
+{
+    ImuQuaternionEkfConfig_t *config = (ImuQuaternionEkfConfig_t *)context;
+    float quaternion_norm_squared;
+
+    if ((imu == NULL) || (config == NULL) ||
+        (config->sample_period_s <= 0.0f) ||
+        (config->quaternion_process_noise < 0.0f) ||
+        (config->gyro_bias_process_noise < 0.0f) ||
+        (config->accel_measure_noise <= 0.0f) ||
+        (config->fading_coefficient <= 0.0f) ||
+        (config->fading_coefficient > 1.0f) ||
+        (config->accel_lpf_time_constant < 0.0f) ||
+        ((config->accel_gravity_sign != 0.0f) &&
+         (config->accel_gravity_sign != 1.0f) &&
+         (config->accel_gravity_sign != -1.0f)))
+    {
+        return false;
+    }
+
+    quaternion_norm_squared = config->initial_quaternion[0] * config->initial_quaternion[0] +
+                              config->initial_quaternion[1] * config->initial_quaternion[1] +
+                              config->initial_quaternion[2] * config->initial_quaternion[2] +
+                              config->initial_quaternion[3] * config->initial_quaternion[3];
+    if (quaternion_norm_squared <= 0.0f)
+        return false;
+
+    if ((quaternion_ekf_owner != NULL) && (quaternion_ekf_owner != imu))
+        return false;
+
+    quaternion_ekf_owner = imu;
+    quaternion_ekf_relative_yaw_deg = 0.0f;
+    IMU_QuaternionEKF_Init(config->initial_quaternion,
+                           config->quaternion_process_noise,
+                           config->gyro_bias_process_noise,
+                           config->accel_measure_noise,
+                           config->fading_coefficient,
+                           config->accel_lpf_time_constant);
+
+    return true;
+}
+
+void ImuQuaternionEkfSolverUpdate(Imu_t *imu, void *context)
+{
+    ImuQuaternionEkfConfig_t *config = (ImuQuaternionEkfConfig_t *)context;
+    float accel_gravity_sign;
+
+    if ((imu == NULL) || (config == NULL) || (quaternion_ekf_owner != imu))
+        return;
+
+    accel_gravity_sign = config->accel_gravity_sign;
+    if (accel_gravity_sign == 0.0f)
+        accel_gravity_sign = 1.0f;
+
+    IMU_QuaternionEKF_Update(imu->data.gyro.x,
+                             imu->data.gyro.y,
+                             imu->data.gyro.z,
+                             imu->data.accel.x * accel_gravity_sign,
+                             imu->data.accel.y * accel_gravity_sign,
+                             imu->data.accel.z * accel_gravity_sign,
+                             config->sample_period_s);
+
+    quaternion_ekf_relative_yaw_deg = angle_wrap_180(
+        quaternion_ekf_relative_yaw_deg +
+        imu->data.gyro.z * config->sample_period_s * 57.295779513f);
+
+    imu->data.angle.x = QEKF_INS.Roll;
+    imu->data.angle.y = QEKF_INS.Pitch;
+    imu->data.angle.z = quaternion_ekf_relative_yaw_deg;
+    imu->data.quaternion.w = QEKF_INS.q[0];
+    imu->data.quaternion.x = QEKF_INS.q[1];
+    imu->data.quaternion.y = QEKF_INS.q[2];
+    imu->data.quaternion.z = QEKF_INS.q[3];
+}
+
+bool ImuMahonySolverInit(Imu_t *imu, void *context)
+{
+    ImuMahonyConfig_t *config = (ImuMahonyConfig_t *)context;
+
+    if ((imu == NULL) || (config == NULL) ||
+        !(config->sample_period_s > 0.0f) ||
+        !(config->proportional_gain >= 0.0f) ||
+        !(config->integral_gain >= 0.0f) ||
+        ((config->accel_gravity_sign != 0.0f) &&
+         (config->accel_gravity_sign != 1.0f) &&
+         (config->accel_gravity_sign != -1.0f)))
+    {
+        return false;
+    }
+
+    return MahonyAhrsInit(&config->ahrs, config->initial_quaternion);
+}
+
+void ImuMahonySolverUpdate(Imu_t *imu, void *context)
+{
+    ImuMahonyConfig_t *config = (ImuMahonyConfig_t *)context;
+    float accel_gravity_sign;
+
+    if ((imu == NULL) || (config == NULL))
+        return;
+
+    accel_gravity_sign = config->accel_gravity_sign;
+    if (accel_gravity_sign == 0.0f)
+        accel_gravity_sign = 1.0f;
+
+    if (!MahonyAhrsUpdate(&config->ahrs,
+                          imu->data.gyro.x,
+                          imu->data.gyro.y,
+                          imu->data.gyro.z,
+                          imu->data.accel.x * accel_gravity_sign,
+                          imu->data.accel.y * accel_gravity_sign,
+                          imu->data.accel.z * accel_gravity_sign,
+                          config->sample_period_s,
+                          config->proportional_gain,
+                          config->integral_gain))
+    {
+        return;
+    }
+
+    MahonyAhrsGetEulerDegrees(&config->ahrs,
+                              &imu->data.angle.x,
+                              &imu->data.angle.y,
+                              &imu->data.angle.z);
+    imu->data.quaternion.w = config->ahrs.quaternion[0];
+    imu->data.quaternion.x = config->ahrs.quaternion[1];
+    imu->data.quaternion.y = config->ahrs.quaternion[2];
+    imu->data.quaternion.z = config->ahrs.quaternion[3];
 }
 
 void ImuProcess(Imu_t *imu)
@@ -365,16 +517,6 @@ void ImuProcess(Imu_t *imu)
         if (ImuVerifyFrame(frame, imu->protocol_frame_len))
             ImuParseFrame(imu, frame);
     }
-}
-
-uint8_t Imu0FrameParse(Imu_t *imu, const uint8_t *frame, uint16_t frame_len, void *context)
-{
-    (void)imu;
-    (void)frame;
-    (void)frame_len;
-    (void)context;
-    /*TODO: Implement IMU frame parsing logic */
-    return 1;
 }
 
 void ImuGetData(Imu_t *imu, ImuData_t *data)
@@ -425,12 +567,4 @@ void ImuGetQuaternion(Imu_t *imu, ImuQuaternion_t *quaternion)
         memcpy(quaternion, &imu->data.quaternion, sizeof(*quaternion));
         taskEXIT_CRITICAL();
     }
-}
-
-uint32_t ImuGetDroppedByteCount(Imu_t *imu)
-{
-    if (imu == NULL)
-        return 0;
-
-    return imu->rx_queue.dropped_byte_count;
 }

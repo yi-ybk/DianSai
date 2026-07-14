@@ -190,7 +190,6 @@ bool OledInit(Oled_t *oled, const OledInitConfig_t *config)
 
     oled->initialized = true;
     OledClear(oled);
-    (void)OledRefresh(oled);
 
     return OledSetDisplay(oled, true);
 }
@@ -198,6 +197,7 @@ bool OledInit(Oled_t *oled, const OledInitConfig_t *config)
 bool OledRefresh(Oled_t *oled)
 {
     uint8_t pages;
+    uint8_t page_mask;
 
     if ((oled == NULL) || (!oled->initialized))
         return false;
@@ -205,36 +205,81 @@ bool OledRefresh(Oled_t *oled)
     pages = (uint8_t)(oled->data.height / OLED_SSD1306_PAGE_HEIGHT);
     for (uint8_t page = 0; page < pages; page++)
     {
-        (void)OledWriteCommand(oled, (uint8_t)(0xB0U + page));
-        (void)OledWriteCommand(oled, 0x00U);
-        (void)OledWriteCommand(oled, 0x10U);
-        (void)OledWriteData(oled, &oled->buffer[(uint16_t)page * oled->data.width], oled->data.width);
+        page_mask = (uint8_t)(1U << page);
+        if ((oled->dirty_pages & page_mask) == 0U)
+            continue;
+
+        if ((!OledWriteCommand(oled, (uint8_t)(0xB0U + page))) ||
+            (!OledWriteCommand(oled, 0x00U)) ||
+            (!OledWriteCommand(oled, 0x10U)) ||
+            (!OledWriteData(oled,
+                            &oled->buffer[(uint16_t)page * oled->data.width],
+                            oled->data.width)))
+        {
+            return false;
+        }
+
+        oled->dirty_pages &= (uint8_t)(~page_mask);
     }
 
     return true;
 }
 
+bool OledRefreshAll(Oled_t *oled)
+{
+    uint8_t pages;
+
+    if ((oled == NULL) || (!oled->initialized))
+        return false;
+
+    pages = (uint8_t)(oled->data.height / OLED_SSD1306_PAGE_HEIGHT);
+    oled->dirty_pages = (pages >= 8U) ? 0xFFU : (uint8_t)((1U << pages) - 1U);
+
+    return OledRefresh(oled);
+}
+
 void OledClear(Oled_t *oled)
 {
+    if (oled == NULL)
+        return;
+
     OledFill(oled, OLED_COLOR_BLACK);
+    if (oled->initialized)
+        (void)OledRefreshAll(oled);
 }
 
 void OledFill(Oled_t *oled, OledColor_t color)
 {
-    uint16_t size;
+    uint8_t fill_value;
+    uint8_t pages;
+    uint8_t old_value;
+    uint8_t new_value;
+    uint16_t index;
+    bool page_changed;
 
     if (oled == NULL)
         return;
 
-    size = (uint16_t)((oled->data.width * oled->data.height) / 8U);
-    if (color == OLED_COLOR_INVERT)
+    fill_value = (color == OLED_COLOR_WHITE) ? 0xFFU : 0x00U;
+    pages = (uint8_t)(oled->data.height / OLED_SSD1306_PAGE_HEIGHT);
+    for (uint8_t page = 0; page < pages; page++)
     {
-        for (uint16_t i = 0; i < size; i++)
-            oled->buffer[i] ^= 0xFFU;
-    }
-    else
-    {
-        memset(oled->buffer, (color == OLED_COLOR_WHITE) ? 0xFF : 0x00, size);
+        page_changed = false;
+        for (uint16_t x = 0; x < oled->data.width; x++)
+        {
+            index = ((uint16_t)page * oled->data.width) + x;
+            old_value = oled->buffer[index];
+            new_value = (color == OLED_COLOR_INVERT) ?
+                        (uint8_t)(old_value ^ 0xFFU) : fill_value;
+            if (new_value != old_value)
+            {
+                oled->buffer[index] = new_value;
+                page_changed = true;
+            }
+        }
+
+        if (page_changed)
+            oled->dirty_pages |= (uint8_t)(1U << page);
     }
 }
 
@@ -242,12 +287,14 @@ void OledDrawPixel(Oled_t *oled, uint16_t x, uint16_t y, OledColor_t color)
 {
     uint16_t index;
     uint8_t mask;
+    uint8_t old_value;
 
     if ((oled == NULL) || (x >= oled->data.width) || (y >= oled->data.height))
         return;
 
     index = x + ((y / OLED_SSD1306_PAGE_HEIGHT) * oled->data.width);
     mask = (uint8_t)(1U << (y % OLED_SSD1306_PAGE_HEIGHT));
+    old_value = oled->buffer[index];
 
     if (color == OLED_COLOR_WHITE)
         oled->buffer[index] |= mask;
@@ -255,6 +302,9 @@ void OledDrawPixel(Oled_t *oled, uint16_t x, uint16_t y, OledColor_t color)
         oled->buffer[index] &= (uint8_t)(~mask);
     else
         oled->buffer[index] ^= mask;
+
+    if (oled->buffer[index] != old_value)
+        oled->dirty_pages |= (uint8_t)(1U << (y / OLED_SSD1306_PAGE_HEIGHT));
 }
 
 void OledDrawRect(Oled_t *oled, uint16_t x, uint16_t y, uint16_t width, uint16_t height, OledColor_t color)
@@ -271,22 +321,33 @@ void OledDrawRect(Oled_t *oled, uint16_t x, uint16_t y, uint16_t width, uint16_t
 
 void OledDrawChar(Oled_t *oled, uint16_t x, uint16_t y, char ch, OledColor_t color)
 {
+    uint16_t pixel_x;
+    uint16_t pixel_y;
     uint8_t column_data;
 
     if (oled == NULL)
         return;
 
-    for (uint8_t col = 0; col < 6U; col++)
+    if ((x >= (oled->data.width / OLED_ASCII_CHAR_WIDTH)) ||
+        (y >= (oled->data.height / OLED_ASCII_CHAR_HEIGHT)))
+    {
+        return;
+    }
+
+    pixel_x = (uint16_t)(x * OLED_ASCII_CHAR_WIDTH);
+    pixel_y = (uint16_t)(y * OLED_ASCII_CHAR_HEIGHT);
+
+    for (uint8_t col = 0; col < OLED_ASCII_CHAR_WIDTH; col++)
     {
         column_data = (col < 5U) ? OledGetFontColumn(ch, col) : 0x00U;
-        for (uint8_t row = 0; row < 8U; row++)
+        for (uint8_t row = 0; row < OLED_ASCII_CHAR_HEIGHT; row++)
         {
             if ((column_data & (1U << row)) != 0U)
-                OledDrawPixel(oled, x + col, y + row, color);
+                OledDrawPixel(oled, pixel_x + col, pixel_y + row, color);
             else if (color == OLED_COLOR_BLACK)
-                OledDrawPixel(oled, x + col, y + row, OLED_COLOR_WHITE);
+                OledDrawPixel(oled, pixel_x + col, pixel_y + row, OLED_COLOR_WHITE);
             else
-                OledDrawPixel(oled, x + col, y + row, OLED_COLOR_BLACK);
+                OledDrawPixel(oled, pixel_x + col, pixel_y + row, OLED_COLOR_BLACK);
         }
     }
 }
@@ -295,8 +356,15 @@ void OledDrawString(Oled_t *oled, uint16_t x, uint16_t y, const char *str, OledC
 {
     uint16_t cursor_x;
     uint16_t cursor_y;
+    uint16_t text_columns;
+    uint16_t text_rows;
 
     if ((oled == NULL) || (str == NULL))
+        return;
+
+    text_columns = (uint16_t)(oled->data.width / OLED_ASCII_CHAR_WIDTH);
+    text_rows = (uint16_t)(oled->data.height / OLED_ASCII_CHAR_HEIGHT);
+    if ((x >= text_columns) || (y >= text_rows))
         return;
 
     cursor_x = x;
@@ -306,22 +374,22 @@ void OledDrawString(Oled_t *oled, uint16_t x, uint16_t y, const char *str, OledC
         if (*str == '\n')
         {
             cursor_x = x;
-            cursor_y = (uint16_t)(cursor_y + 8U);
+            cursor_y++;
             str++;
             continue;
         }
 
-        if ((cursor_x + 6U) > oled->data.width)
+        if (cursor_x >= text_columns)
         {
             cursor_x = x;
-            cursor_y = (uint16_t)(cursor_y + 8U);
+            cursor_y++;
         }
 
-        if ((cursor_y + 8U) > oled->data.height)
+        if (cursor_y >= text_rows)
             break;
 
         OledDrawChar(oled, cursor_x, cursor_y, *str, color);
-        cursor_x = (uint16_t)(cursor_x + 6U);
+        cursor_x++;
         str++;
     }
 
@@ -329,12 +397,39 @@ void OledDrawString(Oled_t *oled, uint16_t x, uint16_t y, const char *str, OledC
     oled->data.cursor_y = cursor_y;
 }
 
+void OledDrawInt(Oled_t *oled, uint16_t x, uint16_t y, int32_t value, OledColor_t color)
+{
+    char buffer[OLED_NUMBER_BUFFER_LEN];
+
+    if (oled == NULL)
+        return;
+
+    OledFormatInt(buffer, sizeof(buffer), value);
+    OledDrawString(oled, x, y, buffer, color);
+}
+
+void OledDrawFloat(Oled_t *oled,
+                   uint16_t x,
+                   uint16_t y,
+                   float value,
+                   uint8_t decimals,
+                   OledColor_t color)
+{
+    char buffer[OLED_NUMBER_BUFFER_LEN];
+
+    if (oled == NULL)
+        return;
+
+    OledFormatFloat(buffer, sizeof(buffer), value, decimals);
+    OledDrawString(oled, x, y, buffer, color);
+}
+
 /**
  * @brief 显示字符串并刷新屏幕
  *
  * @param oled OLED对象指针
- * @param x 起始x坐标
- * @param y 起始y坐标
+ * @param x 首字符列号
+ * @param y 起始文本行号
  * @param str 待显示字符串
  * @param color 显示颜色
  * @return bool 成功返回true
@@ -352,21 +447,18 @@ bool OledShowString(Oled_t *oled, uint16_t x, uint16_t y, const char *str, OledC
  * @brief 显示有符号整数并刷新屏幕
  *
  * @param oled OLED对象指针
- * @param x 起始x坐标
- * @param y 起始y坐标
+ * @param x 首字符列号
+ * @param y 起始文本行号
  * @param value 待显示整数,支持正负数
  * @param color 显示颜色
  * @return bool 成功返回true
  */
 bool OledShowInt(Oled_t *oled, uint16_t x, uint16_t y, int32_t value, OledColor_t color)
 {
-    char buffer[OLED_NUMBER_BUFFER_LEN];
-
     if (oled == NULL)
         return false;
 
-    OledFormatInt(buffer, sizeof(buffer), value);
-    OledDrawString(oled, x, y, buffer, color);
+    OledDrawInt(oled, x, y, value, color);
     return OledRefresh(oled);
 }
 
@@ -374,8 +466,8 @@ bool OledShowInt(Oled_t *oled, uint16_t x, uint16_t y, int32_t value, OledColor_
  * @brief 显示浮点数并刷新屏幕
  *
  * @param oled OLED对象指针
- * @param x 起始x坐标
- * @param y 起始y坐标
+ * @param x 首字符列号
+ * @param y 起始文本行号
  * @param value 待显示浮点数,支持正负数
  * @param decimals 小数位数,最大OLED_FLOAT_DECIMAL_MAX
  * @param color 显示颜色
@@ -383,13 +475,10 @@ bool OledShowInt(Oled_t *oled, uint16_t x, uint16_t y, int32_t value, OledColor_
  */
 bool OledShowFloat(Oled_t *oled, uint16_t x, uint16_t y, float value, uint8_t decimals, OledColor_t color)
 {
-    char buffer[OLED_NUMBER_BUFFER_LEN];
-
     if (oled == NULL)
         return false;
 
-    OledFormatFloat(buffer, sizeof(buffer), value, decimals);
-    OledDrawString(oled, x, y, buffer, color);
+    OledDrawFloat(oled, x, y, value, decimals, color);
     return OledRefresh(oled);
 }
 
@@ -432,12 +521,15 @@ static void OledBindMethods(Oled_t *oled)
 
     oled->init          = OledInit;
     oled->refresh       = OledRefresh;
+    oled->refresh_all   = OledRefreshAll;
     oled->clear         = OledClear;
     oled->fill          = OledFill;
     oled->draw_pixel    = OledDrawPixel;
     oled->draw_rect     = OledDrawRect;
     oled->draw_char     = OledDrawChar;
     oled->draw_string   = OledDrawString;
+    oled->draw_int      = OledDrawInt;
+    oled->draw_float    = OledDrawFloat;
     oled->show_string   = OledShowString;
     oled->show_int      = OledShowInt;
     oled->show_float    = OledShowFloat;

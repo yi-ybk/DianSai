@@ -119,6 +119,23 @@ void USARTSend(USARTInstance *_instance, uint8_t *send_buf, uint16_t send_size, 
     }
 }
 
+bool USARTSendBlocking(USARTInstance *_instance,
+                       const uint8_t *send_buf,
+                       uint16_t send_size,
+                       uint32_t timeout_ms)
+{
+    if ((_instance == NULL) || (_instance->usart_handle == NULL) ||
+        (send_buf == NULL) || (send_size == 0U))
+    {
+        return false;
+    }
+
+    return HAL_UART_Transmit(_instance->usart_handle,
+                             (uint8_t *)send_buf,
+                             send_size,
+                             timeout_ms) == HAL_OK;
+}
+
 /* 串口发送时,gstate会被设为BUSY_TX */
 uint8_t USARTIsTxReady(USARTInstance *_instance)
 {

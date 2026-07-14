@@ -30,7 +30,6 @@ typedef struct
 typedef struct
 {
     LedState_t state;             /**< 当前逻辑状态 */
-    GPIO_PinState pin_state;      /**< 当前GPIO实际电平 */
     uint32_t toggle_count;        /**< 翻转次数 */
 } LedData_t;
 
