@@ -111,6 +111,8 @@ void WheelSetLinearSpeed(Wheel_t *wheel, float speed_mps)
     {
         wheel->data.control_mode = WHEEL_CONTROL_SPEED;
         PidSetTarget(wheel->speed_pid, speed_mps);
+        if (wheel->init_config.speed_pid_no_reverse && (speed_mps == 0.0f))
+            PidReset(wheel->speed_pid);
     }
     else
     {
@@ -156,10 +158,24 @@ void WheelUpdate(Wheel_t *wheel, float dt_s)
         (wheel->data.control_mode == WHEEL_CONTROL_SPEED) &&
         (wheel->speed_pid != NULL))
     {
-        output = PidCalculate(wheel->speed_pid,
-                              wheel->data.linear_speed_mps,
-                              wheel->data.target_linear_speed_mps,
-                              dt_s);
+        if (wheel->init_config.speed_pid_no_reverse &&
+            (wheel->data.target_linear_speed_mps == 0.0f))
+        {
+            output = 0.0f;
+        }
+        else
+        {
+            output = PidCalculate(wheel->speed_pid,
+                                  wheel->data.linear_speed_mps,
+                                  wheel->data.target_linear_speed_mps,
+                                  dt_s);
+            if (wheel->init_config.speed_pid_no_reverse &&
+                (((wheel->data.target_linear_speed_mps > 0.0f) && (output < 0.0f)) ||
+                 ((wheel->data.target_linear_speed_mps < 0.0f) && (output > 0.0f))))
+            {
+                output = 0.0f;
+            }
+        }
         WheelApplyMotorOutput(wheel, output);
     }
 

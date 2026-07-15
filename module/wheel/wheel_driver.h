@@ -32,6 +32,7 @@ typedef struct
     float output_max;               /**< 电机输出上限 */
     bool reversed;                  /**< 是否反转轮子逻辑方向 */
     bool auto_start;                /**< 初始化后是否自动启动电机 */
+    bool speed_pid_no_reverse; /**< Disable PID output opposite to the speed target. */
 } WheelInitConfig_t;
 
 /** @brief 驱动轮运行数据 */

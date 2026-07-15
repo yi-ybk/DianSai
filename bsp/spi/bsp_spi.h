@@ -1,6 +1,13 @@
-#include "spi.h"
+#pragma once
+
+#include "stm32f4xx_hal.h"
 #include "stdint.h"
-#include "gpio.h"
+
+#ifdef HAL_SPI_MODULE_ENABLED
+typedef SPI_HandleTypeDef SPI_HardwareHandle_t;
+#else
+typedef void SPI_HardwareHandle_t;
+#endif
 
 /* 根据开发板引出的spi引脚以及CubeMX中的初始化配置设定 */
 #define SPI_DEVICE_CNT 2       // C型开发板引出两路spi,分别连接BMI088/作为扩展IO在8pin牛角座引出
@@ -17,7 +24,7 @@ typedef enum
 /* SPI实例结构体定义 */
 typedef struct spi_ins_temp
 {
-    SPI_HandleTypeDef *spi_handle; // SPI外设handle
+    SPI_HardwareHandle_t *spi_handle; // SPI外设handle
     GPIO_TypeDef *GPIOx;           // 片选信号对应的GPIO,如GPIOA,GPIOB等等
     uint16_t cs_pin;               // 片选信号对应的引脚号,GPIO_PIN_1,GPIO_PIN_2等等
 
@@ -37,7 +44,7 @@ typedef void (*spi_rx_callback)(SPIInstance *);
 /* SPI初始化配置,其实基本和SPIIstance一模一样,为了代码风格统一因此再次定义 */
 typedef struct
 {
-    SPI_HandleTypeDef *spi_handle; // SPI外设handle
+    SPI_HardwareHandle_t *spi_handle; // SPI外设handle
     GPIO_TypeDef *GPIOx;           // 片选信号对应的GPIO,如GPIOA,GPIOB等等
     uint16_t cs_pin;               // 片选信号对应的引脚号,GPIO_PIN_1,GPIO_PIN_2等等
 

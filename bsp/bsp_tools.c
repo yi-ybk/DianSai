@@ -17,25 +17,31 @@ typedef struct
 static uint8_t sig_idx = 0;
 static uint32_t tmp_sig = 1; // tmp_sing << sig_idx从而生成对应信号量
 
-static osThreadId cbkid_list[MX_SIG_LIST_SIZE];
 static CallbackTask_t cbkinfo_list[MX_SIG_LIST_SIZE];
 
 // 死循环任务,执行cbk函数指针,每次执行完毕后等待sig信号
-__attribute__((noreturn)) static void CallbackTaskBase(void const *cbk)
+__attribute__((noreturn)) static void CallbackTaskBase(void *cbk)
 {
-    void (*cbk_func)(void const *) = (void (*)(void const *))((CallbackTask_t const *)cbk)->callback;
-    void const *ins = ((CallbackTask_t const *)cbk)->ins;
-    uint32_t sig = ((CallbackTask_t const *)cbk)->sig;
+    void (*cbk_func)(void *) = (void (*)(void *))((CallbackTask_t *)cbk)->callback;
+    void *ins = ((CallbackTask_t *)cbk)->ins;
+    uint32_t sig = ((CallbackTask_t *)cbk)->sig;
 
     for (;;)
     {
         cbk_func(ins);
-        osSignalWait(sig, osWaitForever);
+        (void)osThreadFlagsWait(sig, osFlagsWaitAny, osWaitForever);
     }
 }
 
-uint32_t CreateCallbackTask(char *name, void *cbk, void *ins, osPriority priority)
+uint32_t CreateCallbackTask(char *name, void *cbk, void *ins, osPriority_t priority)
 {
+    const osThreadAttr_t thread_attr = {
+        .name       = name,
+        .priority   = priority,
+        .stack_size = 128U,
+    };
+    osThreadId_t thread_id;
+
     if (sig_idx >= MX_SIG_LIST_SIZE)
         while (1)
             LOGERROR("[rtos:cbk_register] CreateCallbackTask: sig_idx >= MX_SIG_LIST_SIZE");
@@ -44,13 +50,9 @@ uint32_t CreateCallbackTask(char *name, void *cbk, void *ins, osPriority priorit
     cbkinfo_list[sig_idx].sig = tmp_sig << sig_idx;
     cbkinfo_list[sig_idx].ins = ins;
 
-    osThreadDef_t threadDef;
-    threadDef.name = name;
-    threadDef.pthread = &CallbackTaskBase;
-    threadDef.tpriority = priority;
-    threadDef.instances = 0;
-    threadDef.stacksize = 128;
-    cbkid_list[sig_idx] = osThreadCreate(&threadDef, (void *)&cbkinfo_list[sig_idx]);
+    thread_id = osThreadNew(CallbackTaskBase, (void *)&cbkinfo_list[sig_idx], &thread_attr);
+    if (thread_id == NULL)
+        return 0U;
 
     return cbkinfo_list[sig_idx++].sig; // 返回信号量,同时增加索引
 }

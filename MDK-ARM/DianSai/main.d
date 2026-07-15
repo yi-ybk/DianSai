@@ -46,7 +46,4 @@ diansai\main.o: ../Core/Inc/dma.h
 diansai\main.o: ../Core/Inc/tim.h
 diansai\main.o: ../Core/Inc/usart.h
 diansai\main.o: ../Core/Inc/gpio.h
-diansai\main.o: ..\bsp\tim\bsp_tim.h
-diansai\main.o: ..\module\led\led_driver.h
-diansai\main.o: ..\bsp\gpio\bsp_gpio.h
-diansai\main.o: E:\keil5\ARM\ARMCC\Bin\..\include\stdbool.h
+diansai\main.o: ../bsp/tim/bsp_tim.h

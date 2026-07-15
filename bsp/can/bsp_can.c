@@ -1,4 +1,6 @@
 #include "bsp_can.h"
+
+#ifdef HAL_CAN_MODULE_ENABLED
 #include "main.h"
 #include "memory.h"
 #include "stdlib.h"
@@ -191,6 +193,39 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
  *
  * @param hcan CAN handle indicate which device the oddest mesg in FIFO_1 comes from
  */
+#endif
+
+#ifndef HAL_CAN_MODULE_ENABLED
+CANInstance *CANRegister(CAN_Init_Config_s *config)
+{
+    (void)config;
+    return NULL;
+}
+
+uint8_t CANTransmit(CANInstance *_instance, float timeout)
+{
+    (void)_instance;
+    (void)timeout;
+    return 0U;
+}
+
+void CANSetDLC(CANInstance *_instance, uint8_t length)
+{
+    (void)_instance;
+    (void)length;
+}
+
+typedef void CAN_HandleTypeDef;
+
+#define CAN_RX_FIFO1 0U
+
+static void CANFIFOxCallback(CAN_HandleTypeDef *hcan, uint32_t fifox)
+{
+    (void)hcan;
+    (void)fifox;
+}
+#endif
+
 void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
     CANFIFOxCallback(hcan, CAN_RX_FIFO1); // 调用我们自己写的函数来处理消息

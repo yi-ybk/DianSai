@@ -10,11 +10,18 @@
  *
  */
 #pragma once
+
+#include "stm32f4xx_hal.h"
+
+#ifdef HAL_PCD_MODULE_ENABLED
 #include "usb_device.h"
 #include "usbd_cdc.h"
 #include "usbd_conf.h"
 #include "usbd_desc.h"
 #include "usbd_cdc_if.h"
+#else
+typedef void (*USBCallback)(uint8_t *buffer, uint32_t *length);
+#endif
 
 typedef struct
 {

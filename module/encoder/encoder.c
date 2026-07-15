@@ -10,6 +10,8 @@ static void EncoderBindMethods(Encoder_t *encoder);
 static bool EncoderConfigIsValid(const EncoderInitConfig_t *config);
 static bool EncoderChannelIsValid(uint32_t channel);
 static void EncoderNormalizeConfig(EncoderInitConfig_t *config);
+static void EncoderResetSpeedWindow(Encoder_t *encoder);
+static void EncoderUpdateSpeedWindow(Encoder_t *encoder, int32_t delta, float dt_s);
 
 /**
  * @brief   初始化编码器对象
@@ -82,8 +84,10 @@ bool EncoderStop(Encoder_t *encoder)
     encoder->data.enabled   = false;
     encoder->data.delta     = 0;
     encoder->data.direction = ENCODER_DIR_STOP;
+    encoder->data.raw_speed_cps = 0.0f;
     encoder->data.speed_cps = 0.0f;
     encoder->data.speed_rps = 0.0f;
+    EncoderResetSpeedWindow(encoder);
     return true;
 }
 
@@ -103,6 +107,7 @@ void EncoderUpdate(Encoder_t *encoder, float dt_s)
     {
         encoder->data.delta     = 0;
         encoder->data.direction = ENCODER_DIR_STOP;
+        encoder->data.raw_speed_cps = 0.0f;
         encoder->data.speed_cps = 0.0f;
         encoder->data.speed_rps = 0.0f;
         return;
@@ -125,9 +130,18 @@ void EncoderUpdate(Encoder_t *encoder, float dt_s)
         encoder->data.direction = ENCODER_DIR_STOP;
 
     if (dt_s > 0.0f)
-        encoder->data.speed_cps = (float)delta / dt_s;
+    {
+        encoder->data.raw_speed_cps = (float)delta / dt_s;
+        EncoderUpdateSpeedWindow(encoder, delta, dt_s);
+        encoder->data.speed_cps = encoder->speed_dt_sum > 0.0f ?
+                                  (float)encoder->speed_delta_sum / encoder->speed_dt_sum :
+                                  encoder->data.raw_speed_cps;
+    }
     else
+    {
+        encoder->data.raw_speed_cps = 0.0f;
         encoder->data.speed_cps = 0.0f;
+    }
 
     if (encoder->init_config.counts_per_rev > 0.0f)
         encoder->data.speed_rps = encoder->data.speed_cps / encoder->init_config.counts_per_rev;
@@ -148,8 +162,10 @@ void EncoderReset(Encoder_t *encoder)
     encoder->data.delta     = 0;
     encoder->data.raw_count = 0U;
     encoder->data.direction = ENCODER_DIR_STOP;
+    encoder->data.raw_speed_cps = 0.0f;
     encoder->data.speed_cps = 0.0f;
     encoder->data.speed_rps = 0.0f;
+    EncoderResetSpeedWindow(encoder);
 }
 
 /**
@@ -237,4 +253,53 @@ static void EncoderNormalizeConfig(EncoderInitConfig_t *config)
 
     if (config->channel == 0U)
         config->channel = TIM_CHANNEL_ALL;
+
+    if (config->speed_window_samples == 0U)
+        config->speed_window_samples = 1U;
+    else if (config->speed_window_samples > ENCODER_SPEED_WINDOW_MAX_SAMPLES)
+        config->speed_window_samples = ENCODER_SPEED_WINDOW_MAX_SAMPLES;
+}
+
+static void EncoderResetSpeedWindow(Encoder_t *encoder)
+{
+    if (encoder == NULL)
+        return;
+
+    memset(encoder->speed_delta_history, 0, sizeof(encoder->speed_delta_history));
+    memset(encoder->speed_dt_history, 0, sizeof(encoder->speed_dt_history));
+    encoder->speed_delta_sum = 0;
+    encoder->speed_dt_sum = 0.0f;
+    encoder->speed_window_index = 0U;
+    encoder->speed_window_count = 0U;
+}
+
+static void EncoderUpdateSpeedWindow(Encoder_t *encoder, int32_t delta, float dt_s)
+{
+    uint8_t window_samples;
+    uint8_t index;
+
+    if ((encoder == NULL) || (dt_s <= 0.0f))
+        return;
+
+    window_samples = encoder->init_config.speed_window_samples;
+    index = encoder->speed_window_index;
+    if (encoder->speed_window_count >= window_samples)
+    {
+        encoder->speed_delta_sum -= encoder->speed_delta_history[index];
+        encoder->speed_dt_sum -= encoder->speed_dt_history[index];
+    }
+    else
+    {
+        encoder->speed_window_count++;
+    }
+
+    encoder->speed_delta_history[index] = delta;
+    encoder->speed_dt_history[index] = dt_s;
+    encoder->speed_delta_sum += delta;
+    encoder->speed_dt_sum += dt_s;
+
+    index++;
+    if (index >= window_samples)
+        index = 0U;
+    encoder->speed_window_index = index;
 }

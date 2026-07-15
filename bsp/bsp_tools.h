@@ -13,5 +13,5 @@
  * @param priority 任务优先级,决定了在中断结束后能否保证立刻执行
  * @return uint32_t 信号量,用于唤醒该任务
  */
-uint32_t CreateCallbackTask(char *name, void *cbk, void *ins, osPriority priority);
+uint32_t CreateCallbackTask(char *name, void *cbk, void *ins, osPriority_t priority);
 

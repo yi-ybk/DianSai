@@ -1,15 +1,56 @@
-# Gray 灰度传感器模块说明
+# Gray 数字灰度传感器模块
 
-## 当前状态
+## 功能
 
-`module/gray` 目录当前仅包含空的 `gray.c` 和 `gray.h`，没有公开数据结构、初始化函数或采样接口，因此现阶段不能在应用代码中使用。
+该模块基于 `bsp_gpio` 读取数字灰度传感器阵列，支持：
 
-在实现该模块前，需要先确定硬件类型：
+- 配置 `1~16` 路灰度输入；
+- 配置高电平或低电平代表黑线；
+- 单通道读取黑色或白色；
+- 获取整组黑线位图和白色位图。
 
-- 数字灰度传感器：依赖 GPIO 输入；
-- 模拟灰度传感器：依赖 ADC 和采样标定；
-- 多路循迹阵列：还需要通道数量、排列顺序、阈值和归一化策略。
+模块只负责读取数字电平。GPIO 输入模式和上下拉方式仍需在 CubeMX 中配置。
 
-建议后续至少提供初始化、单通道/整组读取、阈值配置、归一化数据和循迹偏差输出接口，并在本文档中补充接线、CubeMX 配置和调用示例。
+## 初始化示例
 
-不要在功能实现前仅通过包含 `gray.h` 假定模块已经可用。
+```c
+#include "gray.h"
+
+Gray_t gray = { GRAY_OBJECT_DEFAULT };
+
+static const GrayChannelConfig_t gray_channels[] = {
+    { .GPIOx = GPIOC, .GPIO_Pin = GPIO_PIN_0 },
+    { .GPIOx = GPIOC, .GPIO_Pin = GPIO_PIN_1 },
+    { .GPIOx = GPIOC, .GPIO_Pin = GPIO_PIN_2 },
+    { .GPIOx = GPIOC, .GPIO_Pin = GPIO_PIN_3 },
+};
+
+static const GrayInitConfig_t gray_config = {
+    .channels = gray_channels,
+    .channel_count = sizeof(gray_channels) / sizeof(gray_channels[0]),
+    .black_state = GPIO_PIN_RESET,
+};
+
+void GraySensorInit(void)
+{
+    gray.init(&gray, &gray_config);
+}
+```
+
+`black_state = GPIO_PIN_RESET` 表示低电平为黑线、高电平为白色；设置为 `GPIO_PIN_SET` 时含义相反。
+
+## 数据读取
+
+```c
+GrayData_t data;
+
+gray.update(&gray);
+gray.get_data(&gray, &data);
+
+if (gray.read_channel(&gray, 0U) == GRAY_COLOR_BLACK)
+{
+    /* 第0路检测到黑线 */
+}
+```
+
+`black_mask` 中 bit0 对应配置数组第0路，bit1 对应第1路，以此类推。bit为1表示该路检测到黑线；`white_mask` 的位含义相同，但bit为1表示检测到白色。

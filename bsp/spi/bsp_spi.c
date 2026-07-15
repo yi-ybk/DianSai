@@ -1,4 +1,6 @@
 #include "bsp_spi.h"
+
+#ifdef HAL_SPI_MODULE_ENABLED
 #include "memory.h"
 #include "stdlib.h"
 
@@ -179,6 +181,51 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
  *        这是对HAL库的__weak函数的重写,传输使用IT或DMA模式,在传输完成时会调用此函数
  * @param hspi spi handle
  */
+#endif
+
+#ifndef HAL_SPI_MODULE_ENABLED
+SPIInstance *SPIRegister(SPI_Init_Config_s *conf)
+{
+    (void)conf;
+    return NULL;
+}
+
+void SPITransmit(SPIInstance *spi_ins, uint8_t *ptr_data, uint8_t len)
+{
+    (void)spi_ins;
+    (void)ptr_data;
+    (void)len;
+}
+
+void SPIRecv(SPIInstance *spi_ins, uint8_t *ptr_data, uint8_t len)
+{
+    (void)spi_ins;
+    (void)ptr_data;
+    (void)len;
+}
+
+void SPITransRecv(SPIInstance *spi_ins, uint8_t *ptr_data_rx, uint8_t *ptr_data_tx, uint8_t len)
+{
+    (void)spi_ins;
+    (void)ptr_data_rx;
+    (void)ptr_data_tx;
+    (void)len;
+}
+
+void SPISetMode(SPIInstance *spi_ins, SPI_TXRX_MODE_e spi_mode)
+{
+    (void)spi_ins;
+    (void)spi_mode;
+}
+
+typedef void SPI_HandleTypeDef;
+
+static void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+    (void)hspi;
+}
+#endif
+
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 {
     HAL_SPI_RxCpltCallback(hspi); // 直接调用接收完成的回调函数

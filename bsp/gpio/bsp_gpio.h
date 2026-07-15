@@ -3,7 +3,7 @@
 #include "gpio.h"
 #include "stdint.h"
 
-#define GPIO_MX_DEVICE_NUM 10
+#define GPIO_MX_DEVICE_NUM 32U
 
 /**
  * @brief 用于判断中断来源,注意和CUBEMX中配置一致
@@ -31,7 +31,6 @@ typedef struct tmpgpio
     // 随便取个名字当临时声明
     void (*gpio_model_callback)(struct tmpgpio *); // exti中断回调函数
     void *id;                                      // 区分不同的GPIO实例
-
 } GPIOInstance;
 
 /**

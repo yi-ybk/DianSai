@@ -1,0 +1,13 @@
+diansai\arm_mat_add_f32.o: ..\Drivers\CMSIS\DSP\Source\MatrixFunctions\arm_mat_add_f32.c
+diansai\arm_mat_add_f32.o: ..\Drivers\CMSIS\DSP\Include\dsp/matrix_functions.h
+diansai\arm_mat_add_f32.o: ..\Drivers\CMSIS\DSP\Include\arm_math_types.h
+diansai\arm_mat_add_f32.o: ../Drivers/CMSIS/Include/cmsis_compiler.h
+diansai\arm_mat_add_f32.o: E:\keil5\ARM\ARMCC\Bin\..\include\stdint.h
+diansai\arm_mat_add_f32.o: ../Drivers/CMSIS/Include/cmsis_armcc.h
+diansai\arm_mat_add_f32.o: E:\keil5\ARM\ARMCC\Bin\..\include\string.h
+diansai\arm_mat_add_f32.o: E:\keil5\ARM\ARMCC\Bin\..\include\math.h
+diansai\arm_mat_add_f32.o: E:\keil5\ARM\ARMCC\Bin\..\include\float.h
+diansai\arm_mat_add_f32.o: E:\keil5\ARM\ARMCC\Bin\..\include\limits.h
+diansai\arm_mat_add_f32.o: ..\Drivers\CMSIS\DSP\Include\arm_math_memory.h
+diansai\arm_mat_add_f32.o: ..\Drivers\CMSIS\DSP\Include\dsp/none.h
+diansai\arm_mat_add_f32.o: ..\Drivers\CMSIS\DSP\Include\dsp/utils.h

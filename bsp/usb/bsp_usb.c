@@ -10,6 +10,9 @@
  */
 
 #include "bsp_usb.h"
+
+#ifdef HAL_PCD_MODULE_ENABLED
+
 #include "bsp_log.h"
 #include "bsp_dwt.h"
 
@@ -24,6 +27,23 @@ uint8_t *USBInit(USB_Init_Config_s usb_conf)
     LOGINFO("USB init success");
     return bsp_usb_rx_buffer;
 }
+
+#endif
+
+#ifndef HAL_PCD_MODULE_ENABLED
+uint8_t *USBInit(USB_Init_Config_s usb_conf)
+{
+    (void)usb_conf;
+    return NULL;
+}
+
+static uint8_t CDC_Transmit_FS(uint8_t *buffer, uint16_t len)
+{
+    (void)buffer;
+    (void)len;
+    return 0U;
+}
+#endif
 
 void USBTransmit(uint8_t *buffer, uint16_t len)
 {

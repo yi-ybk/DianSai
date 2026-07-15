@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define ENCODER_SPEED_WINDOW_MAX_SAMPLES 16U
+
 /** @brief 编码器计数方向 */
 typedef enum
 {
@@ -25,6 +27,7 @@ typedef struct
     bool reversed;           /**< 是否反向计数 */
     float counts_per_rev;    /**< 每圈脉冲数 */
     bool auto_start;         /**< 初始化后是否自动启动 */
+    uint8_t speed_window_samples; /**< Speed estimate window length; 1 uses one update. */
 } EncoderInitConfig_t;
 
 /** @brief 编码器运行数据 */
@@ -37,6 +40,7 @@ typedef struct
     uint32_t raw_count;           /**< 定时器原始计数值 */
     float speed_cps;              /**< 速度（count/s） */
     float speed_rps;              /**< 速度（rev/s） */
+    float raw_speed_cps;          /**< Raw speed from the current update (count/s). */
 } EncoderData_t;
 
 typedef struct Encoder Encoder_t;
@@ -48,6 +52,13 @@ struct Encoder
     bool initialized;                /**< 初始化标记 */
     EncoderInitConfig_t init_config; /**< 初始化配置缓存 */
     EncoderData_t data;              /**< 当前运行数据 */
+
+    int32_t speed_delta_history[ENCODER_SPEED_WINDOW_MAX_SAMPLES];
+    float speed_dt_history[ENCODER_SPEED_WINDOW_MAX_SAMPLES];
+    int32_t speed_delta_sum;
+    float speed_dt_sum;
+    uint8_t speed_window_index;
+    uint8_t speed_window_count;
 
     bool (*init)(Encoder_t *encoder, const EncoderInitConfig_t *config);
     bool (*start)(Encoder_t *encoder);

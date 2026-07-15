@@ -57,14 +57,34 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define A_Pin GPIO_PIN_6
-#define A_GPIO_Port GPIOA
-#define B_Pin GPIO_PIN_7
-#define B_GPIO_Port GPIOA
-#define AD12_Pin GPIO_PIN_12
-#define AD12_GPIO_Port GPIOD
-#define BD13_Pin GPIO_PIN_13
-#define BD13_GPIO_Port GPIOD
+#define gray2_Pin GPIO_PIN_0
+#define gray2_GPIO_Port GPIOC
+#define gray3_Pin GPIO_PIN_1
+#define gray3_GPIO_Port GPIOC
+#define gray4_Pin GPIO_PIN_2
+#define gray4_GPIO_Port GPIOC
+#define gray5_Pin GPIO_PIN_3
+#define gray5_GPIO_Port GPIOC
+#define left_pwm_Pin GPIO_PIN_1
+#define left_pwm_GPIO_Port GPIOA
+#define right_pwm_Pin GPIO_PIN_2
+#define right_pwm_GPIO_Port GPIOA
+#define left_A_Pin GPIO_PIN_6
+#define left_A_GPIO_Port GPIOA
+#define left_B_Pin GPIO_PIN_7
+#define left_B_GPIO_Port GPIOA
+#define right_A_Pin GPIO_PIN_12
+#define right_A_GPIO_Port GPIOD
+#define right_B_Pin GPIO_PIN_13
+#define right_B_GPIO_Port GPIOD
+#define right_in2_Pin GPIO_PIN_8
+#define right_in2_GPIO_Port GPIOC
+#define left_in1_Pin GPIO_PIN_9
+#define left_in1_GPIO_Port GPIOC
+#define right_in1_Pin GPIO_PIN_12
+#define right_in1_GPIO_Port GPIOC
+#define left_in2_Pin GPIO_PIN_3
+#define left_in2_GPIO_Port GPIOD
 
 /* USER CODE BEGIN Private defines */
 

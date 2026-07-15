@@ -2,7 +2,18 @@
 #define BSP_CAN_H
 
 #include <stdint.h>
-#include "can.h"
+#include "stm32f4xx_hal.h"
+
+#ifdef HAL_CAN_MODULE_ENABLED
+typedef CAN_HandleTypeDef CAN_HardwareHandle_t;
+typedef CAN_TxHeaderTypeDef CAN_TxHeader_t;
+#else
+typedef void CAN_HardwareHandle_t;
+typedef struct
+{
+    uint8_t reserved;
+} CAN_TxHeader_t;
+#endif
 
 // 最多能够支持的CAN设备数
 #define CAN_MX_REGISTER_CNT 16     // 这个数量取决于CAN总线的负载
@@ -14,8 +25,8 @@
 #pragma pack(1)
 typedef struct _
 {
-    CAN_HandleTypeDef *can_handle; // can句柄
-    CAN_TxHeaderTypeDef txconf;    // CAN报文发送配置
+    CAN_HardwareHandle_t *can_handle; // can句柄
+    CAN_TxHeader_t txconf;            // CAN报文发送配置
     uint32_t tx_id;                // 发送id
     uint32_t tx_mailbox;           // CAN消息填入的邮箱号
     uint8_t tx_buff[8];            // 发送缓存,发送消息长度可以通过CANSetDLC()设定,最大为8
@@ -31,7 +42,7 @@ typedef struct _
 /* CAN实例初始化结构体,将此结构体指针传入注册函数 */
 typedef struct
 {
-    CAN_HandleTypeDef *can_handle;              // can句柄
+    CAN_HardwareHandle_t *can_handle;           // can句柄
     uint32_t tx_id;                             // 发送id
     uint32_t rx_id;                             // 接收id
     void (*can_module_callback)(CANInstance *); // 处理接收数据的回调函数
