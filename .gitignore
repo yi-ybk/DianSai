@@ -1,0 +1,14 @@
+# CCS generated build output
+Debug/
+Release/
+*.out
+*.map
+*_linkInfo.xml
+
+# Local editor and language-server state
+.vscode/ipch/
+.vscode/.browse.VC.db
+.vscode/*.log
+.clangd
+.theia/
+.codex/
