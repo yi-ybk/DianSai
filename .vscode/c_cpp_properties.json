@@ -24,6 +24,7 @@
                 "${workspaceFolder}/bsp/tim",
                 "${workspaceFolder}/bsp/usart",
                 "${workspaceFolder}/module/algorithm",
+                "${workspaceFolder}/module/buzzer",
                 "${workspaceFolder}/module/encoder",
                 "${workspaceFolder}/module/gray",
                 "${workspaceFolder}/module/imu",

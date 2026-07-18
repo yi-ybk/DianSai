@@ -5,11 +5,26 @@
  */
 #pragma once
 
+#include "bsp_gpio.h"
 #include "bsp_tim.h"
 #include <stdbool.h>
 #include <stdint.h>
 
 #define ENCODER_SPEED_WINDOW_MAX_SAMPLES 16U
+
+/** @brief 编码器计数实现方式 */
+typedef enum
+{
+    ENCODER_MODE_TIMER_QEI = 0, /**< 使用TIMG8硬件QEI */
+    ENCODER_MODE_SOFTWARE_GPIO, /**< 使用GPIO双边沿中断软件解码 */
+} EncoderMode_t;
+
+/** @brief 软件编码器单相GPIO配置 */
+typedef struct
+{
+    GPIO_TypeDef *GPIOx;
+    uint32_t GPIO_Pin;
+} EncoderGpioConfig_t;
 
 /** @brief 编码器计数方向 */
 typedef enum
@@ -22,8 +37,11 @@ typedef enum
 /** @brief 编码器初始化配置 */
 typedef struct
 {
+    EncoderMode_t mode;       /**< 编码器实现方式，默认使用硬件QEI */
     TIM_HandleTypeDef *htim; /**< 编码器对应定时器句柄 */
     uint32_t channel;        /**< 编码器通道，通常使用 TIM_CHANNEL_ALL */
+    EncoderGpioConfig_t phase_a; /**< 软件编码器A相引脚 */
+    EncoderGpioConfig_t phase_b; /**< 软件编码器B相引脚 */
     bool reversed;           /**< 是否反向计数 */
     float counts_per_rev;    /**< 每圈脉冲数 */
     bool auto_start;         /**< 初始化后是否自动启动 */
@@ -41,6 +59,7 @@ typedef struct
     float speed_cps;              /**< 速度（count/s） */
     float speed_rps;              /**< 速度（rev/s） */
     float raw_speed_cps;          /**< Raw speed from the current update (count/s). */
+    uint32_t transition_error_count; /**< 软件解码非法状态跳变次数 */
 } EncoderData_t;
 
 typedef struct Encoder Encoder_t;
@@ -49,6 +68,8 @@ typedef struct Encoder Encoder_t;
 struct Encoder
 {
     TIMInstance *tim;                /**< 底层定时器实例 */
+    GPIOInstance *phase_a_gpio;      /**< 软件编码器A相GPIO实例 */
+    GPIOInstance *phase_b_gpio;      /**< 软件编码器B相GPIO实例 */
     bool initialized;                /**< 初始化标记 */
     EncoderInitConfig_t init_config; /**< 初始化配置缓存 */
     EncoderData_t data;              /**< 当前运行数据 */
@@ -59,6 +80,11 @@ struct Encoder
     float speed_dt_sum;
     uint8_t speed_window_index;
     uint8_t speed_window_count;
+
+    volatile uint32_t software_raw_count;
+    volatile uint32_t software_transition_errors;
+    uint32_t software_last_count;
+    volatile uint8_t software_state;
 
     bool (*init)(Encoder_t *encoder, const EncoderInitConfig_t *config);
     bool (*start)(Encoder_t *encoder);

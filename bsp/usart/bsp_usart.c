@@ -16,6 +16,7 @@ static USARTInstance *usart_instance[DEVICE_USART_CNT];
 
 static void USARTReceiveIRQ(USARTInstance *instance);
 static void USARTTransmitIRQ(USARTInstance *instance);
+static void USARTDMAReceiveIdle(USARTInstance *instance);
 static void USARTDMAReceiveComplete(USARTInstance *instance);
 static void USARTDMATransmitComplete(USARTInstance *instance);
 
@@ -107,6 +108,9 @@ bool USARTStartReceiveDMA(USARTInstance *instance)
     DL_UART_enableDMAReceiveEvent(instance->usart_handle->Instance,
                                   DL_UART_DMA_INTERRUPT_RX);
     DL_UART_disableInterrupt(instance->usart_handle->Instance, DL_UART_INTERRUPT_RX);
+    DL_UART_enableInterrupt(instance->usart_handle->Instance,
+                            DL_UART_INTERRUPT_DMA_DONE_RX |
+                            DL_UART_INTERRUPT_RX_TIMEOUT_ERROR);
     DL_DMA_enableChannel(instance->dma, instance->rx_dma_channel);
 
     instance->rx_dma_active = true;
@@ -220,6 +224,10 @@ void USARTIRQHandler(UART_HandleTypeDef *huart)
             USARTReceiveIRQ(instance);
         else if (interrupt == DL_UART_IIDX_TX)
             USARTTransmitIRQ(instance);
+        else if (interrupt == DL_UART_IIDX_DMA_DONE_RX)
+            USARTDMAReceiveComplete(instance);
+        else if (interrupt == DL_UART_IIDX_RX_TIMEOUT_ERROR)
+            USARTDMAReceiveIdle(instance);
         else if (interrupt != DL_UART_IIDX_NO_INTERRUPT)
             DL_UART_clearInterruptStatus(huart->Instance,
                                          DL_UART_getEnabledInterruptStatus(huart->Instance, 0xFFFFFFFFU));
@@ -300,6 +308,39 @@ static void USARTTransmitIRQ(USARTInstance *instance)
         instance->tx_index = 0U;
         instance->usart_handle->gState = 0U;
     }
+}
+
+static void USARTDMAReceiveIdle(USARTInstance *instance)
+{
+    uint16_t remaining;
+    uint16_t received;
+
+    if ((instance == NULL) || (!instance->rx_dma_active) ||
+        (instance->dma == NULL) ||
+        (instance->rx_dma_channel == USART_DMA_CHANNEL_INVALID))
+    {
+        return;
+    }
+
+    DL_DMA_disableChannel(instance->dma, instance->rx_dma_channel);
+    remaining = DL_DMA_getTransferSize(instance->dma, instance->rx_dma_channel);
+    if (remaining > instance->recv_buff_size)
+        remaining = instance->recv_buff_size;
+
+    received = instance->recv_buff_size - remaining;
+    instance->rx_dma_active = false;
+
+    if (received > 0U)
+    {
+        instance->recv_data_start = 0U;
+        instance->recv_data_size  = received;
+        instance->recv_buff_index = 0U;
+
+        if (instance->module_callback != NULL)
+            instance->module_callback(instance);
+    }
+
+    (void)USARTStartReceiveDMA(instance);
 }
 
 static void USARTDMAReceiveComplete(USARTInstance *instance)

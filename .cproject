@@ -46,6 +46,7 @@
                                     <listOptionValue value="${PROJECT_ROOT}/bsp/tim"/>
                                     <listOptionValue value="${PROJECT_ROOT}/bsp/usart"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/algorithm"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/module/buzzer"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/encoder"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/gray"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/imu"/>

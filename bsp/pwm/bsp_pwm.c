@@ -125,12 +125,20 @@ void PWMSetPeriod(PWMInstance *pwm, float period)
 void PWMSetDutyRatio(PWMInstance *pwm, float dutyratio)
 {
     uint32_t compare;
+    uint32_t period_ticks;
 
     if ((pwm == NULL) || (pwm->htim == NULL))
         return;
 
     dutyratio = PWMClamp(dutyratio, 0.0f, 1.0f);
-    compare = (uint32_t)(dutyratio * (float)(pwm->htim->Init.Period + 1U));
+    period_ticks = pwm->htim->Init.Period + 1U;
+    if (dutyratio <= 0.0f)
+        compare = pwm->htim->Init.Period;
+    else if (dutyratio >= 1.0f)
+        compare = 0U;
+    else
+        compare = (uint32_t)((1.0f - dutyratio) * (float)period_ticks) - 1U;
+
     __HAL_TIM_SetCompare(pwm->htim, pwm->channel, compare);
     pwm->dutyratio = dutyratio;
 }
