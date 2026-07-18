@@ -18,6 +18,8 @@
 #include "math.h"
 #include "main.h"
 
+typedef char UserLibFloatSizeCheck[(sizeof(float) == 4U) ? 1 : -1];
+
 #ifdef _CMSIS_OS_H
 #define user_malloc pvPortMalloc
 #else
@@ -223,4 +225,138 @@ void MatInit(mat *m, uint8_t row, uint8_t col)
     m->numCols = col;
     m->numRows = row;
     m->pData = (float *)zmalloc(row * col * sizeof(float));
+}
+
+uint16_t BytesToUint16LE(const uint8_t bytes[2])
+{
+    if (bytes == NULL)
+        return 0U;
+
+    return (uint16_t)bytes[0] |
+           ((uint16_t)bytes[1] << 8U);
+}
+
+uint16_t BytesToUint16BE(const uint8_t bytes[2])
+{
+    if (bytes == NULL)
+        return 0U;
+
+    return ((uint16_t)bytes[0] << 8U) |
+           (uint16_t)bytes[1];
+}
+
+int16_t BytesToInt16LE(const uint8_t bytes[2])
+{
+    return (int16_t)BytesToUint16LE(bytes);
+}
+
+int16_t BytesToInt16BE(const uint8_t bytes[2])
+{
+    return (int16_t)BytesToUint16BE(bytes);
+}
+
+uint32_t BytesToUint32LE(const uint8_t bytes[4])
+{
+    if (bytes == NULL)
+        return 0U;
+
+    return (uint32_t)bytes[0] |
+           ((uint32_t)bytes[1] << 8U) |
+           ((uint32_t)bytes[2] << 16U) |
+           ((uint32_t)bytes[3] << 24U);
+}
+
+uint32_t BytesToUint32BE(const uint8_t bytes[4])
+{
+    if (bytes == NULL)
+        return 0U;
+
+    return ((uint32_t)bytes[0] << 24U) |
+           ((uint32_t)bytes[1] << 16U) |
+           ((uint32_t)bytes[2] << 8U) |
+           (uint32_t)bytes[3];
+}
+
+int32_t BytesToInt32LE(const uint8_t bytes[4])
+{
+    return (int32_t)BytesToUint32LE(bytes);
+}
+
+int32_t BytesToInt32BE(const uint8_t bytes[4])
+{
+    return (int32_t)BytesToUint32BE(bytes);
+}
+
+float BytesToFloatLE(const uint8_t bytes[4])
+{
+    uint32_t raw = BytesToUint32LE(bytes);
+    float value;
+
+    memcpy(&value, &raw, sizeof(value));
+    return value;
+}
+
+float BytesToFloatBE(const uint8_t bytes[4])
+{
+    uint32_t raw = BytesToUint32BE(bytes);
+    float value;
+
+    memcpy(&value, &raw, sizeof(value));
+    return value;
+}
+
+void Uint16ToBytesLE(uint16_t value, uint8_t bytes[2])
+{
+    if (bytes == NULL)
+        return;
+
+    bytes[0] = (uint8_t)value;
+    bytes[1] = (uint8_t)(value >> 8U);
+}
+
+void Uint16ToBytesBE(uint16_t value, uint8_t bytes[2])
+{
+    if (bytes == NULL)
+        return;
+
+    bytes[0] = (uint8_t)(value >> 8U);
+    bytes[1] = (uint8_t)value;
+}
+
+void Uint32ToBytesLE(uint32_t value, uint8_t bytes[4])
+{
+    if (bytes == NULL)
+        return;
+
+    bytes[0] = (uint8_t)value;
+    bytes[1] = (uint8_t)(value >> 8U);
+    bytes[2] = (uint8_t)(value >> 16U);
+    bytes[3] = (uint8_t)(value >> 24U);
+}
+
+void Uint32ToBytesBE(uint32_t value, uint8_t bytes[4])
+{
+    if (bytes == NULL)
+        return;
+
+    bytes[0] = (uint8_t)(value >> 24U);
+    bytes[1] = (uint8_t)(value >> 16U);
+    bytes[2] = (uint8_t)(value >> 8U);
+    bytes[3] = (uint8_t)value;
+}
+
+void FloatToBytesLE(float value, uint8_t bytes[4])
+{
+    uint32_t raw;
+
+    memcpy(&raw, &value, sizeof(raw));
+    Uint32ToBytesLE(raw, bytes);
+}
+
+void FloatToBytesBE(float value, uint8_t bytes[4])
+{
+    uint32_t raw;
+
+    memcpy(&raw, &value, sizeof(raw));
+    Uint32ToBytesBE(raw, bytes);
 }

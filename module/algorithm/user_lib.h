@@ -121,6 +121,39 @@ float Dot3d(float *v1, float *v2);
 
 float AverageFilter(float new_data, float *buf, uint8_t len);
 
+/** @brief 按小端字节序读取16位无符号整数 */
+uint16_t BytesToUint16LE(const uint8_t bytes[2]);
+/** @brief 按大端字节序读取16位无符号整数 */
+uint16_t BytesToUint16BE(const uint8_t bytes[2]);
+/** @brief 按小端字节序读取16位有符号整数 */
+int16_t BytesToInt16LE(const uint8_t bytes[2]);
+/** @brief 按大端字节序读取16位有符号整数 */
+int16_t BytesToInt16BE(const uint8_t bytes[2]);
+/** @brief 按小端字节序读取32位无符号整数 */
+uint32_t BytesToUint32LE(const uint8_t bytes[4]);
+/** @brief 按大端字节序读取32位无符号整数 */
+uint32_t BytesToUint32BE(const uint8_t bytes[4]);
+/** @brief 按小端字节序读取32位有符号整数 */
+int32_t BytesToInt32LE(const uint8_t bytes[4]);
+/** @brief 按大端字节序读取32位有符号整数 */
+int32_t BytesToInt32BE(const uint8_t bytes[4]);
+/** @brief 按小端字节序将4字节IEEE 754数据转换为float */
+float BytesToFloatLE(const uint8_t bytes[4]);
+/** @brief 按大端字节序将4字节IEEE 754数据转换为float */
+float BytesToFloatBE(const uint8_t bytes[4]);
+/** @brief 按小端字节序写入16位无符号整数 */
+void Uint16ToBytesLE(uint16_t value, uint8_t bytes[2]);
+/** @brief 按大端字节序写入16位无符号整数 */
+void Uint16ToBytesBE(uint16_t value, uint8_t bytes[2]);
+/** @brief 按小端字节序写入32位无符号整数 */
+void Uint32ToBytesLE(uint32_t value, uint8_t bytes[4]);
+/** @brief 按大端字节序写入32位无符号整数 */
+void Uint32ToBytesBE(uint32_t value, uint8_t bytes[4]);
+/** @brief 按小端字节序写入float的IEEE 754数据 */
+void FloatToBytesLE(float value, uint8_t bytes[4]);
+/** @brief 按大端字节序写入float的IEEE 754数据 */
+void FloatToBytesBE(float value, uint8_t bytes[4]);
+
 #define rad_format(Ang) loop_float_constrain((Ang), -PI, PI)
 
 #endif

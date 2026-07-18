@@ -17,7 +17,6 @@
 #include "pid.h"
 #include "chassis.h"
 
-
 static void imuParseTask(void *argument);
 static void testTask(void *argument);
 static void oledTask(void *argument);
