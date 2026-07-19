@@ -1,7 +1,7 @@
 diansai\chassis.o: ..\application\chassis\chassis.c
 diansai\chassis.o: ..\application\chassis\chassis.h
 diansai\chassis.o: ../module/imu/imu_driver.h
-diansai\chassis.o: ..\bsp\usart\bsp_usart.h
+diansai\chassis.o: ../bsp/usart/bsp_usart.h
 diansai\chassis.o: E:\keil5\ARM\ARMCC\Bin\..\include\stdbool.h
 diansai\chassis.o: E:\keil5\ARM\ARMCC\Bin\..\include\stdint.h
 diansai\chassis.o: ../Core/Inc/main.h
@@ -27,6 +27,7 @@ diansai\chassis.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_exti.h
 diansai\chassis.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma.h
 diansai\chassis.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma_ex.h
 diansai\chassis.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_cortex.h
+diansai\chassis.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_can.h
 diansai\chassis.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash.h
 diansai\chassis.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ex.h
 diansai\chassis.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h
@@ -35,13 +36,13 @@ diansai\chassis.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pwr_ex.h
 diansai\chassis.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim.h
 diansai\chassis.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim_ex.h
 diansai\chassis.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h
-diansai\chassis.o: ..\module\algorithm\mahony_ahrs.h
-diansai\chassis.o: ..\module\wheel\wheel_driver.h
-diansai\chassis.o: ..\module\motor\motor_driver.h
-diansai\chassis.o: ..\bsp\pwm\bsp_pwm.h
+diansai\chassis.o: ../module/algorithm/mahony_ahrs.h
+diansai\chassis.o: ../module/wheel/wheel_driver.h
+diansai\chassis.o: ../module/motor/motor_driver.h
+diansai\chassis.o: ../bsp/pwm/bsp_pwm.h
 diansai\chassis.o: ../Core/Inc/tim.h
 diansai\chassis.o: ../Core/Inc/gpio.h
-diansai\chassis.o: ..\module\encoder\encoder.h
+diansai\chassis.o: ../module/encoder/encoder.h
 diansai\chassis.o: ../bsp/tim/bsp_tim.h
-diansai\chassis.o: ..\module\pid\pid.h
+diansai\chassis.o: ../module/pid/pid.h
 diansai\chassis.o: E:\keil5\ARM\ARMCC\Bin\..\include\string.h

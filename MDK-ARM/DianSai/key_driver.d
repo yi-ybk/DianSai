@@ -1,6 +1,6 @@
 diansai\key_driver.o: ..\module\key\key_driver.c
 diansai\key_driver.o: ..\module\key\key_driver.h
-diansai\key_driver.o: ..\bsp\gpio\bsp_gpio.h
+diansai\key_driver.o: ../bsp/gpio/bsp_gpio.h
 diansai\key_driver.o: ../Core/Inc/gpio.h
 diansai\key_driver.o: ../Core/Inc/main.h
 diansai\key_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h
@@ -26,6 +26,7 @@ diansai\key_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_exti.h
 diansai\key_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma.h
 diansai\key_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma_ex.h
 diansai\key_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_cortex.h
+diansai\key_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_can.h
 diansai\key_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash.h
 diansai\key_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ex.h
 diansai\key_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h

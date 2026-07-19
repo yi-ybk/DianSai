@@ -1,6 +1,6 @@
 diansai\led_driver.o: ..\module\led\led_driver.c
 diansai\led_driver.o: ..\module\led\led_driver.h
-diansai\led_driver.o: ..\bsp\gpio\bsp_gpio.h
+diansai\led_driver.o: ../bsp/gpio/bsp_gpio.h
 diansai\led_driver.o: ../Core/Inc/gpio.h
 diansai\led_driver.o: ../Core/Inc/main.h
 diansai\led_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h
@@ -26,6 +26,7 @@ diansai\led_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_exti.h
 diansai\led_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma.h
 diansai\led_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma_ex.h
 diansai\led_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_cortex.h
+diansai\led_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_can.h
 diansai\led_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash.h
 diansai\led_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ex.h
 diansai\led_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h

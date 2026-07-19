@@ -1,7 +1,7 @@
 diansai\wheel_driver.o: ..\module\wheel\wheel_driver.c
 diansai\wheel_driver.o: ..\module\wheel\wheel_driver.h
-diansai\wheel_driver.o: ..\module\motor\motor_driver.h
-diansai\wheel_driver.o: ..\bsp\pwm\bsp_pwm.h
+diansai\wheel_driver.o: ../module/motor/motor_driver.h
+diansai\wheel_driver.o: ../bsp/pwm/bsp_pwm.h
 diansai\wheel_driver.o: ../Core/Inc/tim.h
 diansai\wheel_driver.o: ../Core/Inc/main.h
 diansai\wheel_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h
@@ -27,6 +27,7 @@ diansai\wheel_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_exti.h
 diansai\wheel_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma.h
 diansai\wheel_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma_ex.h
 diansai\wheel_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_cortex.h
+diansai\wheel_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_can.h
 diansai\wheel_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash.h
 diansai\wheel_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ex.h
 diansai\wheel_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h
@@ -36,9 +37,9 @@ diansai\wheel_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim.h
 diansai\wheel_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim_ex.h
 diansai\wheel_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h
 diansai\wheel_driver.o: ../Core/Inc/gpio.h
-diansai\wheel_driver.o: ..\module\encoder\encoder.h
+diansai\wheel_driver.o: ../module/encoder/encoder.h
 diansai\wheel_driver.o: ../bsp/tim/bsp_tim.h
 diansai\wheel_driver.o: E:\keil5\ARM\ARMCC\Bin\..\include\stdbool.h
-diansai\wheel_driver.o: ..\module\pid\pid.h
-diansai\wheel_driver.o: ..\module\algorithm\user_lib_math.h
+diansai\wheel_driver.o: ../module/pid/pid.h
+diansai\wheel_driver.o: ../module/algorithm/user_lib_math.h
 diansai\wheel_driver.o: E:\keil5\ARM\ARMCC\Bin\..\include\string.h

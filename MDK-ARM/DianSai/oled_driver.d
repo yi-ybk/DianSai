@@ -1,6 +1,6 @@
 diansai\oled_driver.o: ..\module\oled\oled_driver.c
 diansai\oled_driver.o: ..\module\oled\oled_driver.h
-diansai\oled_driver.o: ..\bsp\iic\bsp_iic.h
+diansai\oled_driver.o: ../bsp/iic/bsp_iic.h
 diansai\oled_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h
 diansai\oled_driver.o: ../Core/Inc/stm32f4xx_hal_conf.h
 diansai\oled_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_rcc.h
@@ -24,6 +24,7 @@ diansai\oled_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_exti.h
 diansai\oled_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma.h
 diansai\oled_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma_ex.h
 diansai\oled_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_cortex.h
+diansai\oled_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_can.h
 diansai\oled_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash.h
 diansai\oled_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ex.h
 diansai\oled_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h

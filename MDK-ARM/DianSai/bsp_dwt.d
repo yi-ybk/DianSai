@@ -24,6 +24,7 @@ diansai\bsp_dwt.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_exti.h
 diansai\bsp_dwt.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma.h
 diansai\bsp_dwt.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma_ex.h
 diansai\bsp_dwt.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_cortex.h
+diansai\bsp_dwt.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_can.h
 diansai\bsp_dwt.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash.h
 diansai\bsp_dwt.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ex.h
 diansai\bsp_dwt.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h
@@ -32,9 +33,9 @@ diansai\bsp_dwt.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pwr_ex.h
 diansai\bsp_dwt.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim.h
 diansai\bsp_dwt.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim_ex.h
 diansai\bsp_dwt.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h
-diansai\bsp_dwt.o: ..\bsp\log\bsp_log.h
-diansai\bsp_dwt.o: ..\Middlewares\Third_Party\SEGGER\RTT\SEGGER_RTT.h
-diansai\bsp_dwt.o: ..\Middlewares\Third_Party\SEGGER\Config\SEGGER_RTT_Conf.h
+diansai\bsp_dwt.o: ../bsp/log/bsp_log.h
+diansai\bsp_dwt.o: ../Middlewares/Third_Party/SEGGER/RTT/SEGGER_RTT.h
+diansai\bsp_dwt.o: ../Middlewares/Third_Party/SEGGER/Config/SEGGER_RTT_Conf.h
 diansai\bsp_dwt.o: E:\keil5\ARM\ARMCC\Bin\..\include\stdio.h
 diansai\bsp_dwt.o: ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os.h
 diansai\bsp_dwt.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/FreeRTOS.h

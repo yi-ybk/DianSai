@@ -23,6 +23,7 @@ diansai\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_exti.h
 diansai\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma.h
 diansai\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma_ex.h
 diansai\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_cortex.h
+diansai\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_can.h
 diansai\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash.h
 diansai\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ex.h
 diansai\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h
@@ -42,6 +43,7 @@ diansai\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/mpu_wrappers.
 diansai\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/task.h
 diansai\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/list.h
 diansai\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.h
+diansai\main.o: ../Core/Inc/can.h
 diansai\main.o: ../Core/Inc/dma.h
 diansai\main.o: ../Core/Inc/tim.h
 diansai\main.o: ../Core/Inc/usart.h

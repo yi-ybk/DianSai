@@ -17,6 +17,9 @@
 #include "pid.h"
 #include "chassis.h"
 
+#include "zhangdatou_42.h"
+#include "gimbal.h"
+
 static void imuParseTask(void *argument);
 static void testTask(void *argument);
 static void oledTask(void *argument);
@@ -32,79 +35,8 @@ static void motorInit(void);
 static void pidInit(void);
 static void wheelInit(void);
 static void chassisInit(void);
-static void chassisTestUpdateTelemetry(uint32_t phase_index,
-                                       float phase_elapsed_s,
-                                       float command_forward_speed_mps,
-                                       float command_turn_speed_radps);
-
-typedef struct
-{
-    float duration_s;
-    float forward_speed_mps;
-    float turn_speed_radps;
-} ChassisTestPhase_t;
-
-typedef struct ChassisTestTelemetry
-{
-    uint32_t phase_index;
-    float phase_elapsed_s;
-    float control_dt_s;
-    float command_forward_speed_mps;
-    float command_turn_speed_radps;
-
-    float forward_speed_mps;
-    float turn_speed_radps;
-    int32_t encoder_left_count;
-    int32_t encoder_left_delta;
-    float encoder_left_speed_cps;
-    int32_t encoder_right_count;
-    int32_t encoder_right_delta;
-    float encoder_right_speed_cps;
-    float wheel_left_target_speed_mps;
-    float wheel_left_speed_mps;
-    float wheel_right_target_speed_mps;
-    float wheel_right_speed_mps;
-    float motor_left_output;
-    float motor_right_output;
-    float wheel_left_pid_error;
-    float wheel_left_pid_p_out;
-    float wheel_left_pid_i_out;
-    float wheel_left_pid_d_out;
-    uint8_t wheel_left_pid_in_deadband;
-    float wheel_right_pid_error;
-    float wheel_right_pid_p_out;
-    float wheel_right_pid_i_out;
-    float wheel_right_pid_d_out;
-    uint8_t wheel_right_pid_in_deadband;
-    float imu_gyro_z_radps;
-    float imu_yaw_deg;
-} ChassisTestTelemetry_t;
-
-static const ChassisTestPhase_t chassis_test_phases[] = {
-    { 5.0f,  0.0f,  0.0f },
-    { 10.0f, 0.1f,  0.0f },
-    { 3.0f,  0.0f,  0.0f },
-    { 10.0f, 0.2f,  0.0f },
-    { 3.0f,  0.0f,  0.0f },
-    { 10.0f, 0.3f,  0.0f },
-    { 3.0f,  0.0f,  0.0f },
-    { 10.0f, 0.0f,  0.1f },
-    { 3.0f,  0.0f,  0.0f },
-    { 10.0f, 0.0f, -0.1f },
-    { 3.0f,  0.0f,  0.0f },
-    { 10.0f, 0.0f,  0.2f },
-    { 3.0f,  0.0f,  0.0f },
-    { 10.0f, 0.0f, -0.2f },
-    { 3.0f,  0.0f,  0.0f },
-    { 10.0f, 0.0f,  0.4f },
-    { 3.0f,  0.0f,  0.0f },
-    { 10.0f, 0.0f, -0.4f },
-    { 3.0f,  0.0f,  0.0f },
-    { 15.0f, 0.3f,  0.2f },
-    { 3.0f,  0.0f,  0.0f },
-    { 10.0f, 0.3f,  0.0f },
-    { 5.0f,  0.0f,  0.0f },
-};
+static void zdt42Init(void);
+static void gimbalInit(void);
 
 osThreadId_t imu0TaskHandle;
 const osThreadAttr_t imu0Task_attributes = {
@@ -123,7 +55,7 @@ const osThreadAttr_t oledTask_attributes = {
 osThreadId_t testTaskHandle;
 const osThreadAttr_t testTask_attributes = {
   .name = "testTask",
-  .stack_size = 128 * 4,
+  .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
 
@@ -183,13 +115,13 @@ Wheel_t wheel_right = { WHEEL_OBJECT_DEFAULT };
 
 Chassis_t chassis = { CHASSIS_OBJECT_DEFAULT };
 
-volatile ChassisTestTelemetry_t chassis_test_telemetry = {
-    .phase_index = UINT32_MAX,
-};
+Zdt42_t zdt42_motor_yaw   = { ZDT42_OBJECT_DEFAULT };
+Zdt42_t zdt42_motor_pitch = { ZDT42_OBJECT_DEFAULT };
+
+Gimbal_t gimbal = {GIMBAL_OBJECT_DEFAULT};
 
 void robotInit(void)
 {
-    __disable_irq();
 
     grayInit();
     keyInit();
@@ -202,118 +134,23 @@ void robotInit(void)
     wheelInit();
     chassisInit();
 
+    zdt42Init();
+
     imu0TaskHandle = osThreadNew(imuParseTask, &imu0, &imu0Task_attributes);
     oledTaskHandle = osThreadNew(oledTask, NULL, &oledTask_attributes);
     testTaskHandle = osThreadNew(testTask, NULL, &testTask_attributes);
 
-    __enable_irq();
 }
 
-float dt_s;
 void testTask(void *argument)
 {
-    uint32_t last_tick;
-    uint32_t next_tick;
-    uint32_t now_tick;
-    uint32_t tick_freq;
-    // float dt_s;
-    uint32_t phase_index = 0U;
-    float phase_elapsed_s = 0.0f;
-    const uint32_t phase_count = sizeof(chassis_test_phases) /
-                                 sizeof(chassis_test_phases[0]);
-
-    (void)argument;
-
-    chassis.set_velocity(&chassis, 0.0f, 0.0f);
-    chassis.reset_odometry(&chassis);
-
-    tick_freq = osKernelGetTickFreq();
-    last_tick = osKernelGetTickCount();
-    next_tick = last_tick;
-
-    
-
     for (;;)
     {
 
-        osDelay(10); 
-
-        // next_tick += 10U; // 10ms周期
-
-        // if (osDelayUntil(next_tick) != osOK)
-        //     next_tick = osKernelGetTickCount();
-
-        // now_tick     = osKernelGetTickCount();
-        // dt_s         = (float)(now_tick - last_tick) / (float)tick_freq;
-        // last_tick    = now_tick;
-
-        // phase_elapsed_s += dt_s;
-        // while ((phase_index + 1U < phase_count) &&
-        //        (phase_elapsed_s >= chassis_test_phases[phase_index].duration_s))
-        // {
-        //     phase_elapsed_s -= chassis_test_phases[phase_index].duration_s;
-        //     phase_index++;
-        //     chassis.set_velocity(&chassis,
-        //                          chassis_test_phases[phase_index].forward_speed_mps,
-        //                          chassis_test_phases[phase_index].turn_speed_radps);
-        // }
-
-        // if ((phase_index + 1U == phase_count) &&
-        //     (phase_elapsed_s > chassis_test_phases[phase_index].duration_s))
-        // {
-        //     phase_elapsed_s = chassis_test_phases[phase_index].duration_s;
-        // }
-
-        // chassis.update(&chassis, dt_s);
-        // chassisTestUpdateTelemetry(phase_index,
-        //                            phase_elapsed_s,
-        //                            chassis_test_phases[phase_index].forward_speed_mps,
-        //                            chassis_test_phases[phase_index].turn_speed_radps);
+        osDelay(10U);
     }
-}
 
-static void chassisTestUpdateTelemetry(uint32_t phase_index,
-                                       float phase_elapsed_s,
-                                       float command_forward_speed_mps,
-                                       float command_turn_speed_radps)
-{
-    ImuData_t imu_data;
-
-    imu0.get_data(&imu0, &imu_data);
-
-    chassis_test_telemetry.phase_index = phase_index;
-    chassis_test_telemetry.phase_elapsed_s = phase_elapsed_s;
-    chassis_test_telemetry.control_dt_s = dt_s;
-    chassis_test_telemetry.command_forward_speed_mps = command_forward_speed_mps;
-    chassis_test_telemetry.command_turn_speed_radps = command_turn_speed_radps;
-    chassis_test_telemetry.forward_speed_mps = chassis.data.forward_speed_mps;
-    chassis_test_telemetry.turn_speed_radps = chassis.data.turn_speed_radps;
-    chassis_test_telemetry.encoder_left_count = encoder_left.data.count;
-    chassis_test_telemetry.encoder_left_delta = encoder_left.data.delta;
-    chassis_test_telemetry.encoder_left_speed_cps = encoder_left.data.speed_cps;
-    chassis_test_telemetry.encoder_right_count = encoder_right.data.count;
-    chassis_test_telemetry.encoder_right_delta = encoder_right.data.delta;
-    chassis_test_telemetry.encoder_right_speed_cps = encoder_right.data.speed_cps;
-    chassis_test_telemetry.wheel_left_target_speed_mps = wheel_left.data.target_linear_speed_mps;
-    chassis_test_telemetry.wheel_left_speed_mps = wheel_left.data.linear_speed_mps;
-    chassis_test_telemetry.wheel_right_target_speed_mps = wheel_right.data.target_linear_speed_mps;
-    chassis_test_telemetry.wheel_right_speed_mps = wheel_right.data.linear_speed_mps;
-    chassis_test_telemetry.motor_left_output = motor_left.data.output;
-    chassis_test_telemetry.motor_right_output = motor_right.data.output;
-    chassis_test_telemetry.wheel_left_pid_error = wheel_left_pid.data.error;
-    chassis_test_telemetry.wheel_left_pid_p_out = wheel_left_pid.data.p_out;
-    chassis_test_telemetry.wheel_left_pid_i_out = wheel_left_pid.data.i_out;
-    chassis_test_telemetry.wheel_left_pid_d_out = wheel_left_pid.data.d_out;
-    chassis_test_telemetry.wheel_left_pid_in_deadband =
-        wheel_left_pid.data.in_deadband ? 1U : 0U;
-    chassis_test_telemetry.wheel_right_pid_error = wheel_right_pid.data.error;
-    chassis_test_telemetry.wheel_right_pid_p_out = wheel_right_pid.data.p_out;
-    chassis_test_telemetry.wheel_right_pid_i_out = wheel_right_pid.data.i_out;
-    chassis_test_telemetry.wheel_right_pid_d_out = wheel_right_pid.data.d_out;
-    chassis_test_telemetry.wheel_right_pid_in_deadband =
-        wheel_right_pid.data.in_deadband ? 1U : 0U;
-    chassis_test_telemetry.imu_gyro_z_radps = imu_data.gyro.z;
-    chassis_test_telemetry.imu_yaw_deg = imu_data.angle.z;
+    
 }
 
 void imuParseTask(void *argument)
@@ -335,7 +172,6 @@ void imuParseTask(void *argument)
     }
 }
 
-
 Oled_t oled = { OLED_OBJECT_DEFAULT };
 void oledTask(void *argument)
 {
@@ -351,12 +187,6 @@ void oledTask(void *argument)
     // oled.draw_string(&oled, 10, 2, "y:"    , OLED_COLOR_WHITE);
     // oled.draw_string(&oled, 10, 3, "z:"    , OLED_COLOR_WHITE);
 
-    // oled.draw_string(&oled, 0, 0,  "cha_for:", OLED_COLOR_WHITE);
-
-    // oled.draw_string(&oled, 0, 3,  "cha_turn:", OLED_COLOR_WHITE);
-
-    // oled.refresh(&oled);
-
     for (;;)
     {
         // ImuData_t imu_data;
@@ -370,24 +200,9 @@ void oledTask(void *argument)
         // oled.draw_float(&oled, 13, 2, imu_data.angle.y, 2, OLED_COLOR_WHITE);
         // oled.draw_float(&oled, 13, 3, imu_data.angle.z, 2, OLED_COLOR_WHITE);
 
-        // ChassisData_t chassis_data;
-        // chassis.get_data(&chassis, &chassis_data);
+        //oled.refresh(&oled);
 
-        // oled.draw_float(&oled, 11, 0, chassis_data.target_forward_speed_mps, 2, OLED_COLOR_WHITE);
-        // oled.draw_float(&oled, 11, 3, chassis_data.target_turn_speed_radps, 2, OLED_COLOR_WHITE);
-        // oled.draw_float(&oled, 11, 1, chassis_data.forward_speed_mps, 2, OLED_COLOR_WHITE);
-        // oled.draw_float(&oled, 11, 4, chassis_data.turn_speed_radps, 2, OLED_COLOR_WHITE);
-
-        gray.update(&gray);
-
-        oled.draw_int(&oled, 0, 1, gray.read_channel(&gray, 0U), OLED_COLOR_WHITE);
-        oled.draw_int(&oled, 0, 2, gray.read_channel(&gray, 1U), OLED_COLOR_WHITE);
-        oled.draw_int(&oled, 0, 3, gray.read_channel(&gray, 2U), OLED_COLOR_WHITE);
-        oled.draw_int(&oled, 0, 4, gray.read_channel(&gray, 3U), OLED_COLOR_WHITE);
-
-        oled.refresh(&oled);
-
-        osDelay(50);
+        //osDelay(50);
     }
 }
 
@@ -643,4 +458,44 @@ static void chassisInit(void)
         .auto_start = true
     };
     chassis.init(&chassis, &chassis_config);
+}
+
+static void zdt42Init(void){
+    const Zdt42InitConfig_t zdt42_motor_yaw_config   = ZDT42_INIT_CONFIG_DEFAULT(&hcan2, 1U);
+    const Zdt42InitConfig_t zdt42_motor_pitch_config = ZDT42_INIT_CONFIG_DEFAULT(&hcan2, 2U);
+
+    zdt42_motor_yaw.init(&zdt42_motor_yaw, &zdt42_motor_yaw_config);
+    zdt42_motor_pitch.init(&zdt42_motor_pitch, &zdt42_motor_pitch_config);
+}
+
+static void gimbalInit(void){
+    const GimbalInitConfig_t gimbal_config = {
+        .yaw = {
+            .motor                = &zdt42_motor_yaw,
+            .pulses_per_motor_rev = 3200.0f,
+            .motor_to_axis_ratio  = 1.0f,
+            .min_angle_deg        = -170.0f,
+            .max_angle_deg        = 170.0f,
+            .position_offset_deg  = 0.0f,
+            .reversed             = false,
+            .home_mode            = ZDT42_HOME_NEAREST,
+        },
+        .pitch = {
+            .motor = &zdt42_motor_pitch,
+            .pulses_per_motor_rev = 3200.0f,
+            .motor_to_axis_ratio  = 1.0f,
+            .min_angle_deg        = -45.0f,
+            .max_angle_deg        = 90.0f,
+            .position_offset_deg  = 0.0f,
+            .reversed             = true,
+            .home_mode            = ZDT42_HOME_NEAREST,
+        },
+        .position_speed_rpm  = 60U,
+        .acceleration        = 10U,
+        .feedback_period_ms  = 20U,
+        .feedback_timeout_ms = 100U,
+        .auto_enable         = true,
+    };
+
+    gimbal.init(&gimbal, &gimbal_config);
 }

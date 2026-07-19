@@ -1,7 +1,7 @@
 diansai\mg354pdh0_driver.o: ..\module\imu\mg354pdh0_driver.c
 diansai\mg354pdh0_driver.o: ..\module\imu\mg354pdh0_driver.h
 diansai\mg354pdh0_driver.o: ..\module\imu\imu_driver.h
-diansai\mg354pdh0_driver.o: ..\bsp\usart\bsp_usart.h
+diansai\mg354pdh0_driver.o: ../bsp/usart/bsp_usart.h
 diansai\mg354pdh0_driver.o: E:\keil5\ARM\ARMCC\Bin\..\include\stdbool.h
 diansai\mg354pdh0_driver.o: E:\keil5\ARM\ARMCC\Bin\..\include\stdint.h
 diansai\mg354pdh0_driver.o: ../Core/Inc/main.h
@@ -27,6 +27,7 @@ diansai\mg354pdh0_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_ex
 diansai\mg354pdh0_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma.h
 diansai\mg354pdh0_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_dma_ex.h
 diansai\mg354pdh0_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_cortex.h
+diansai\mg354pdh0_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_can.h
 diansai\mg354pdh0_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash.h
 diansai\mg354pdh0_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ex.h
 diansai\mg354pdh0_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h
@@ -35,7 +36,7 @@ diansai\mg354pdh0_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pw
 diansai\mg354pdh0_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim.h
 diansai\mg354pdh0_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim_ex.h
 diansai\mg354pdh0_driver.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h
-diansai\mg354pdh0_driver.o: ..\module\algorithm\mahony_ahrs.h
+diansai\mg354pdh0_driver.o: ../module/algorithm/mahony_ahrs.h
 diansai\mg354pdh0_driver.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/FreeRTOS.h
 diansai\mg354pdh0_driver.o: ../Core/Inc/FreeRTOSConfig.h
 diansai\mg354pdh0_driver.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/projdefs.h

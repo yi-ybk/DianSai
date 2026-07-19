@@ -13,8 +13,8 @@ diansai\bsp_tools.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/mpu_wrap
 diansai\bsp_tools.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/task.h
 diansai\bsp_tools.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/list.h
 diansai\bsp_tools.o: ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.h
-diansai\bsp_tools.o: ..\bsp\log\bsp_log.h
-diansai\bsp_tools.o: ..\Middlewares\Third_Party\SEGGER\RTT\SEGGER_RTT.h
-diansai\bsp_tools.o: ..\Middlewares\Third_Party\SEGGER\Config\SEGGER_RTT_Conf.h
+diansai\bsp_tools.o: ../bsp/log/bsp_log.h
+diansai\bsp_tools.o: ../Middlewares/Third_Party/SEGGER/RTT/SEGGER_RTT.h
+diansai\bsp_tools.o: ../Middlewares/Third_Party/SEGGER/Config/SEGGER_RTT_Conf.h
 diansai\bsp_tools.o: E:\keil5\ARM\ARMCC\Bin\..\include\stdio.h
 diansai\bsp_tools.o: ..\bsp\bsp_tools.h
