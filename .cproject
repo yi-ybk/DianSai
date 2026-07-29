@@ -50,6 +50,7 @@
                                     <listOptionValue value="${PROJECT_ROOT}/module/buzzer"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/encoder"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/gray"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/module/track"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/imu"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/key"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/led"/>

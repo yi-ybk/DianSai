@@ -11,6 +11,7 @@
 #include "key_driver.h"
 
 #include "gray.h"
+#include "track.h"
 
 #include "encoder.h"
 #include "motor_driver.h"
@@ -24,7 +25,9 @@
 static void testTask(void *argument);
 static void oledTask(void *argument);
 static void imuParseTask(void *argument);
+static void trackTask(void *argument);
 
+static void trackInit(void);
 static void ledInit(void);
 static void buzzerInit(void);
 static void oledInit(void);
@@ -69,6 +72,13 @@ const osThreadAttr_t imu0Task_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
+
+osThreadId_t trackTaskHandle;
+const osThreadAttr_t trackTask_attributes = {
+  .name = "trackTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /*******************************/
 
 /*********** 对象实例 ***********/
@@ -84,6 +94,7 @@ Key_t key1 = { KEY_OBJECT_DEFAULT };
 Key_t key2 = { KEY_OBJECT_DEFAULT };
 
 Gray_t gray = { GRAY_OBJECT_DEFAULT };
+Track_t track = { TRACK_OBJECT_DEFAULT };
 
 Encoder_t encoder_left  = { ENCODER_OBJECT_DEFAULT };
 Encoder_t encoder_right = { ENCODER_OBJECT_DEFAULT };
@@ -153,42 +164,42 @@ void robotInit(void)
 {
     /* 初始化机器人相关的硬件和软件组件 */
     ledInit();
-    buzzerInit();
+    //buzzerInit();
     oledInit();
     keyInit();
     grayInit();
+    trackInit();
     encoderInit();
     motorInit();
     pidInit();
     wheelInit();
     chassisInit();
-
     testTaskHandle = osThreadNew(testTask, NULL, &testTask_attributes);
     oledTaskHandle = osThreadNew(oledTask, NULL, &oledTask_attributes);
     imu0TaskHandle = osThreadNew(imuParseTask, &imu0, &imu0Task_attributes);
+    trackTaskHandle = osThreadNew(trackTask, NULL, &trackTask_attributes);
     configASSERT(testTaskHandle != NULL);
     configASSERT(oledTaskHandle != NULL);
     configASSERT(imu0TaskHandle != NULL);
+    configASSERT(trackTaskHandle != NULL);
 }
 
 static void testTask(void *argument)
 {
     (void)argument;
 
-    chassis.set_velocity(&chassis, 0.2f, 0.0f);
-
+    //chassis.set_velocity(&chassis, 0.03f, 0.00f);
     while (1)
     {
-        // led_green.toggle(&led_green);
-        // led_red.toggle(&led_red);
-        osDelay(500);
+ 
+        chassis.update(&chassis,0.005f);
+        osDelay(5);
     }
 }
 
 void oledTask(void *argument)
 {
     (void)argument;
-
     oled.draw_string(&oled, 0, 0,  "acc:", OLED_COLOR_WHITE);
     oled.draw_string(&oled, 0, 1,  "x:"  , OLED_COLOR_WHITE);
     oled.draw_string(&oled, 0, 2,  "y:"  , OLED_COLOR_WHITE);
@@ -260,7 +271,6 @@ static void imuParseTask(void *argument)
         vTaskDelete(NULL);
         return;
     }
-
     if (!USARTConfigureDMA(imu->usart, &dma_config) ||
         !USARTStartReceiveDMA(imu->usart))
     {
@@ -272,13 +282,53 @@ static void imuParseTask(void *argument)
     NVIC_ClearPendingIRQ(UART_IMU0_INST_INT_IRQN);
     NVIC_SetPriority(UART_IMU0_INST_INT_IRQN, 2U);
     NVIC_EnableIRQ(UART_IMU0_INST_INT_IRQN);
-
     for (;;)
     {
         if (imu->process != NULL)
             imu->process(imu);
-
         osDelay(6);
+    }
+}
+
+static void trackTask(void *argument)
+{
+    (void)argument;
+    float turn_speed;
+
+    for (;;)
+    {
+        turn_speed = track.update(&track, 0.02f);
+        chassis.set_velocity(&chassis, 0.1, -turn_speed);
+        if(turn_speed>0)
+        {
+            DL_UART_Main_transmitData(UART_imudate_INST, (int)(turn_speed/10)%10+'0');
+            osDelay(10);
+            DL_UART_Main_transmitData(UART_imudate_INST, (int)(turn_speed)%10+'0');
+            osDelay(10);
+            DL_UART_Main_transmitData(UART_imudate_INST, '.');
+            osDelay(10);
+            DL_UART_Main_transmitData(UART_imudate_INST, (int)(turn_speed*10)%10+'0');
+            osDelay(10);
+            DL_UART_Main_transmitData(UART_imudate_INST, (int)(turn_speed*100)%10+'0');
+            osDelay(10);
+            DL_UART_Main_transmitData(UART_imudate_INST, ' ');
+        }
+        else {
+            DL_UART_Main_transmitData(UART_imudate_INST, '-');
+            osDelay(10);
+            DL_UART_Main_transmitData(UART_imudate_INST, (int)(-turn_speed/10)%10+'0');
+            osDelay(10);
+            DL_UART_Main_transmitData(UART_imudate_INST, (int)(-turn_speed)%10+'0');
+            osDelay(10);
+            DL_UART_Main_transmitData(UART_imudate_INST, '.');
+            osDelay(10);
+            DL_UART_Main_transmitData(UART_imudate_INST, (int)(-turn_speed*10)%10+'0');
+            osDelay(10);
+            DL_UART_Main_transmitData(UART_imudate_INST, (int)(-turn_speed*100)%10+'0');
+            osDelay(10);
+            DL_UART_Main_transmitData(UART_imudate_INST, ' ');
+        }
+        osDelay(20);
     }
 }
 
@@ -473,10 +523,14 @@ static void gpioInterruptDispatch(GPIO_TypeDef *GPIOx)
 
 void grayInit(void){
     const GrayChannelConfig_t gray_channels[] = {
-        { .GPIOx = GPIOB, .GPIO_Pin = GPIO_PIN_17 },
-        { .GPIOx = GPIOA, .GPIO_Pin = GPIO_PIN_16 },
-        { .GPIOx = GPIOA, .GPIO_Pin = GPIO_PIN_14 },
-        { .GPIOx = GPIOB, .GPIO_Pin = GPIO_PIN_20 },
+        { .GPIOx = GPIOA, .GPIO_Pin = GPIO_PIN_2 },   // GRAY_A02  第0路
+        { .GPIOx = GPIOB, .GPIO_Pin = GPIO_PIN_19 },  // GRAY_B19  第1路
+        { .GPIOx = GPIOB, .GPIO_Pin = GPIO_PIN_17 },  // GRAY_B17  第2路
+        { .GPIOx = GPIOA, .GPIO_Pin = GPIO_PIN_16 },  // GRAY_A16  第3路
+        { .GPIOx = GPIOA, .GPIO_Pin = GPIO_PIN_14 },  // GRAY_A14  第4路
+        { .GPIOx = GPIOB, .GPIO_Pin = GPIO_PIN_20 },  // GRAY_B20  第5路
+        { .GPIOx = GPIOB, .GPIO_Pin = GPIO_PIN_25 },  // GRAY_B25  第6路
+        { .GPIOx = GPIOA, .GPIO_Pin = GPIO_PIN_25 },  // GRAY_A25  第7路
     };
 
     const GrayInitConfig_t gray_config = {
@@ -486,6 +540,33 @@ void grayInit(void){
     };
 
     gray.init(&gray, &gray_config);
+}
+
+static void trackInit(void){
+    static const float track_weights[8] = { -3.5f, -2.5f, -1.5f, -0.5f, 0.5f, 1.5f, 2.5f, 3.5f };
+
+    const TrackInitConfig_t track_config = {
+        .gray = &gray,
+        .channel_count = 8U,
+        .weights = { -3.5f, -2.5f, -1.5f, -0.5f, 0.5f, 1.5f, 2.5f, 3.5f },
+        .base_speed = 0.5f,
+        .max_turn_speed = 2.0f,
+        .pid_config = {
+            .kp = 0.3f,
+            .ki = 0.0f,
+            .kd = 0.0f,
+            .enable_output_limit = true,
+            .output_min = -2.0f,
+            .output_max = 2.0f,
+            .enable_integral_limit = true,
+            .integral_min = -1.0f,
+            .integral_max = 1.0f,
+            .deadband = 0.0f,
+            .derivative_on_measurement = false,
+            .reset_integral_on_deadband = true,
+        },
+    };
+    track.init(&track, &track_config);
 }
 
 static void encoderInit(void){
@@ -589,8 +670,8 @@ static void motorInit(void){
 static void pidInit(void)
 {
     const PidInitConfig_t wheel_left_pid_config = {
-        .kp = 2.5f,
-        .ki = 1.0f,
+        .kp = 2.8f,
+        .ki = 0.5f,
         .kd = 0.0f,
         .enable_output_limit = true,
         .output_min = -1.0f,
@@ -603,8 +684,8 @@ static void pidInit(void)
         .reset_integral_on_deadband = false,
     };
     const PidInitConfig_t wheel_right_pid_config = {
-        .kp = 2.5f,
-        .ki = 1.0f,
+        .kp = 2.8f,
+        .ki = 0.5f,
         .kd = 0.0f,
         .enable_output_limit = true,
         .output_min = -1.0f,
@@ -625,7 +706,7 @@ static void wheelInit(void)
     const WheelInitConfig_t wheel_left_config = {
         .motor = &motor_left,
         .speed_pid = &wheel_left_pid,
-        .use_speed_pid = false,
+        .use_speed_pid = true,
         .radius_m = 0.0325f,
         .encoder_to_wheel_ratio = 1.0f,
         .max_linear_speed_mps   = 1.2f,
@@ -638,7 +719,7 @@ static void wheelInit(void)
     const WheelInitConfig_t wheel_right_config = {
         .motor = &motor_right,
         .speed_pid = &wheel_right_pid,
-        .use_speed_pid = false,
+        .use_speed_pid = true,
         .radius_m = 0.0325f,
         .encoder_to_wheel_ratio = 1.0f,
         .max_linear_speed_mps   = 1.2f,
