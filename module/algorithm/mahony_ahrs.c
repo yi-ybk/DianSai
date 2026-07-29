@@ -24,25 +24,14 @@ static float MahonyConstrain(float value, float min_value, float max_value)
 
 bool MahonyAhrsInit(MahonyAhrs_t *ahrs, const float initial_quaternion[4])
 {
-    float norm_squared;
-    float inverse_norm;
+    (void)initial_quaternion;
 
-    if ((ahrs == NULL) || (initial_quaternion == NULL))
+    if (ahrs == NULL)
         return false;
 
-    norm_squared = initial_quaternion[0] * initial_quaternion[0] +
-                   initial_quaternion[1] * initial_quaternion[1] +
-                   initial_quaternion[2] * initial_quaternion[2] +
-                   initial_quaternion[3] * initial_quaternion[3];
-    if (!(norm_squared > MAHONY_NORM_EPSILON))
-        return false;
-
-    inverse_norm = 1.0f / sqrtf(norm_squared);
-    for (uint8_t i = 0U; i < 4U; ++i)
-        ahrs->quaternion[i] = initial_quaternion[i] * inverse_norm;
-
-    for (uint8_t i = 0U; i < 3U; ++i)
-        ahrs->integral_feedback[i] = 0.0f;
+    ahrs->euler_rad[0] = 0.0f;
+    ahrs->euler_rad[1] = 0.0f;
+    ahrs->euler_rad[2] = 0.0f;
 
     return true;
 }
@@ -58,98 +47,60 @@ bool MahonyAhrsUpdate(MahonyAhrs_t *ahrs,
                       float proportional_gain,
                       float integral_gain)
 {
-    float q0;
-    float q1;
-    float q2;
-    float q3;
-    float integral_x;
-    float integral_y;
-    float integral_z;
+    float roll;
+    float pitch;
+    float yaw;
+    float roll_g;
+    float pitch_g;
+    float yaw_g;
+    float roll_a;
+    float pitch_a;
+    float alpha;
     float accel_norm_squared;
-    float quaternion_norm_squared;
     float inverse_norm;
-    float half_gravity_x;
-    float half_gravity_y;
-    float half_gravity_z;
-    float half_error_x;
-    float half_error_y;
-    float half_error_z;
-    float half_sample_period;
-    float next_q0;
-    float next_q1;
-    float next_q2;
-    float next_q3;
 
-    if ((ahrs == NULL) || !(sample_period_s > 0.0f) ||
-        !(proportional_gain >= 0.0f) || !(integral_gain >= 0.0f))
+    (void)integral_gain;
+
+    if ((ahrs == NULL) || !(sample_period_s > 0.0f))
     {
         return false;
     }
 
-    q0 = ahrs->quaternion[0];
-    q1 = ahrs->quaternion[1];
-    q2 = ahrs->quaternion[2];
-    q3 = ahrs->quaternion[3];
-    integral_x = ahrs->integral_feedback[0];
-    integral_y = ahrs->integral_feedback[1];
-    integral_z = ahrs->integral_feedback[2];
+    roll = ahrs->euler_rad[0];
+    pitch = ahrs->euler_rad[1];
+    yaw = ahrs->euler_rad[2];
+
+    roll_g = roll + gx * sample_period_s;
+    pitch_g = pitch + gy * sample_period_s;
+    yaw_g = yaw + gz * sample_period_s;
 
     accel_norm_squared = ax * ax + ay * ay + az * az;
-    if (accel_norm_squared > MAHONY_NORM_EPSILON)
+    if ((accel_norm_squared > MAHONY_NORM_EPSILON) && (proportional_gain > 0.0f))
     {
         inverse_norm = 1.0f / sqrtf(accel_norm_squared);
         ax *= inverse_norm;
         ay *= inverse_norm;
         az *= inverse_norm;
 
-        half_gravity_x = q1 * q3 - q0 * q2;
-        half_gravity_y = q0 * q1 + q2 * q3;
-        half_gravity_z = q0 * q0 - 0.5f + q3 * q3;
+        pitch_a = asinf(MahonyConstrain(-ax, -1.0f, 1.0f));
+        roll_a = atan2f(ay, az);
 
-        half_error_x = ay * half_gravity_z - az * half_gravity_y;
-        half_error_y = az * half_gravity_x - ax * half_gravity_z;
-        half_error_z = ax * half_gravity_y - ay * half_gravity_x;
+        alpha = proportional_gain;
+        if (alpha > 1.0f)
+            alpha = 1.0f;
+        if (alpha < 0.0f)
+            alpha = 0.0f;
 
-        if (integral_gain > 0.0f)
-        {
-            integral_x += 2.0f * integral_gain * half_error_x * sample_period_s;
-            integral_y += 2.0f * integral_gain * half_error_y * sample_period_s;
-            integral_z += 2.0f * integral_gain * half_error_z * sample_period_s;
-            gx += integral_x;
-            gy += integral_y;
-            gz += integral_z;
-        }
-        else
-        {
-            integral_x = 0.0f;
-            integral_y = 0.0f;
-            integral_z = 0.0f;
-        }
-
-        gx += 2.0f * proportional_gain * half_error_x;
-        gy += 2.0f * proportional_gain * half_error_y;
-        gz += 2.0f * proportional_gain * half_error_z;
+        ahrs->euler_rad[0] = alpha * roll_g + (1.0f - alpha) * roll_a;
+        ahrs->euler_rad[1] = alpha * pitch_g + (1.0f - alpha) * pitch_a;
+        ahrs->euler_rad[2] = yaw_g;
     }
-
-    half_sample_period = 0.5f * sample_period_s;
-    next_q0 = q0 + (-q1 * gx - q2 * gy - q3 * gz) * half_sample_period;
-    next_q1 = q1 + ( q0 * gx + q2 * gz - q3 * gy) * half_sample_period;
-    next_q2 = q2 + ( q0 * gy - q1 * gz + q3 * gx) * half_sample_period;
-    next_q3 = q3 + ( q0 * gz + q1 * gy - q2 * gx) * half_sample_period;
-
-    quaternion_norm_squared = next_q0 * next_q0 + next_q1 * next_q1 +
-                              next_q2 * next_q2 + next_q3 * next_q3;
-    if (!(quaternion_norm_squared > MAHONY_NORM_EPSILON))
-        return false;
-
-    inverse_norm = 1.0f / sqrtf(quaternion_norm_squared);
-    ahrs->quaternion[0] = next_q0 * inverse_norm;
-    ahrs->quaternion[1] = next_q1 * inverse_norm;
-    ahrs->quaternion[2] = next_q2 * inverse_norm;
-    ahrs->quaternion[3] = next_q3 * inverse_norm;
-    ahrs->integral_feedback[0] = integral_x;
-    ahrs->integral_feedback[1] = integral_y;
-    ahrs->integral_feedback[2] = integral_z;
+    else
+    {
+        ahrs->euler_rad[0] = roll_g;
+        ahrs->euler_rad[1] = pitch_g;
+        ahrs->euler_rad[2] = yaw_g;
+    }
 
     return true;
 }
@@ -159,24 +110,10 @@ void MahonyAhrsGetEulerDegrees(const MahonyAhrs_t *ahrs,
                                float *pitch,
                                float *yaw)
 {
-    float q0;
-    float q1;
-    float q2;
-    float q3;
-    float pitch_sine;
-
     if ((ahrs == NULL) || (roll == NULL) || (pitch == NULL) || (yaw == NULL))
         return;
 
-    q0 = ahrs->quaternion[0];
-    q1 = ahrs->quaternion[1];
-    q2 = ahrs->quaternion[2];
-    q3 = ahrs->quaternion[3];
-
-    *roll = atan2f(2.0f * (q0 * q1 + q2 * q3),
-                   1.0f - 2.0f * (q1 * q1 + q2 * q2)) * MAHONY_RAD_TO_DEG;
-    pitch_sine = MahonyConstrain(2.0f * (q0 * q2 - q3 * q1), -1.0f, 1.0f);
-    *pitch = asinf(pitch_sine) * MAHONY_RAD_TO_DEG;
-    *yaw = atan2f(2.0f * (q0 * q3 + q1 * q2),
-                  1.0f - 2.0f * (q2 * q2 + q3 * q3)) * MAHONY_RAD_TO_DEG;
+    *roll = ahrs->euler_rad[0] * MAHONY_RAD_TO_DEG;
+    *pitch = ahrs->euler_rad[1] * MAHONY_RAD_TO_DEG;
+    *yaw = ahrs->euler_rad[2] * MAHONY_RAD_TO_DEG;
 }

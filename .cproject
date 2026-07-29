@@ -37,6 +37,7 @@
                                     <listOptionValue value="${PROJECT_ROOT}"/>
                                     <listOptionValue value="${PROJECT_ROOT}/application"/>
                                     <listOptionValue value="${PROJECT_ROOT}/application/chassis"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/application/gimbal"/>
                                     <listOptionValue value="${PROJECT_ROOT}/bsp"/>
                                     <listOptionValue value="${PROJECT_ROOT}/bsp/can"/>
                                     <listOptionValue value="${PROJECT_ROOT}/bsp/gpio"/>
@@ -49,6 +50,7 @@
                                     <listOptionValue value="${PROJECT_ROOT}/module/buzzer"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/encoder"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/gray"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/module/track"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/imu"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/key"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/led"/>
@@ -57,6 +59,7 @@
                                     <listOptionValue value="${PROJECT_ROOT}/module/pid"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/stepmotor"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/wheel"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/module/zhangdatou_42"/>
                                     <listOptionValue value="${COM_TI_MSPM0_SDK_INSTALL_DIR}/source/third_party/CMSIS/Core/Include"/>
                                     <listOptionValue value="${COM_TI_MSPM0_SDK_INSTALL_DIR}/source/third_party/CMSIS/DSP/Include"/>
                                     <listOptionValue value="${COM_TI_MSPM0_SDK_INSTALL_DIR}/kernel/freertos/Source/include"/>

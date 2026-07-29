@@ -8,8 +8,7 @@
 
 typedef struct
 {
-    float quaternion[4];
-    float integral_feedback[3];
+    float euler_rad[3];
 } MahonyAhrs_t;
 
 bool MahonyAhrsInit(MahonyAhrs_t *ahrs, const float initial_quaternion[4]);
