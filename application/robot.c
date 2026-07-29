@@ -26,6 +26,9 @@ static void oledTask(void *argument);
 static void imuParseTask(void *argument);
 static void trackTask(void *argument);
 
+static void key1ProcessEvents(void);
+static void oledDrawDefaultPage(void);
+static void oledDrawBallPage(void);
 static void trackInit(void);
 static void ledInit(void);
 static void oledInit(void);
@@ -154,6 +157,18 @@ Imu_t imu0 = {
             .device_context = NULL,
         },
 };
+
+float ball_target = 0.0f;
+float ball_real   = 10.0f;
+
+volatile uint8_t mode = 2U;
+
+static volatile bool ball_menu_active = false;
+static volatile bool key1_pressed = false;
+static volatile bool key1_long_press_handled = false;
+static volatile bool key1_release_pending = false;
+static volatile uint32_t key1_press_tick = 0U;
+static volatile uint32_t key1_release_tick = 0U;
 /*******************************/
 
 void robotInit(void)
@@ -193,56 +208,60 @@ static void testTask(void *argument)
     }
 }
 
-void oledTask(void *argument)
+static void oledTask(void *argument)
 {
+    bool menu_active;
+    bool refresh_ok;
+
     (void)argument;
-    oled.draw_string(&oled, 0, 0,  "acc:", OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 0, 1,  "x:"  , OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 0, 2,  "y:"  , OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 0, 3,  "z:"  , OLED_COLOR_WHITE);
-
-    oled.draw_string(&oled, 10, 0, "angle:", OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 10, 1, "x:"    , OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 10, 2, "y:"    , OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 10, 3, "z:"    , OLED_COLOR_WHITE);
-
-    int32_t i = 0;
 
     while (1)
     {
+        key1ProcessEvents();
+        menu_active = ball_menu_active;
+        oled.fill(&oled, OLED_COLOR_BLACK);
+        if (menu_active)
+            oledDrawBallPage();
+        else
+            oledDrawDefaultPage();
 
-        ImuData_t imu_data;
-        imu0.get_data(&imu0, &imu_data);
+        refresh_ok = oled.refresh(&oled);
+        if (!refresh_ok)
+        {
+            osDelay(5);
+            refresh_ok = oled.refresh(&oled);
+        }
+        if (refresh_ok && (!menu_active))
 
-        oled.draw_float(&oled, 3, 1, imu_data.accel.x, 2, OLED_COLOR_WHITE);
-        oled.draw_float(&oled, 3, 2, imu_data.accel.y, 2, OLED_COLOR_WHITE);
-        oled.draw_float(&oled, 3, 3, imu_data.accel.z, 2, OLED_COLOR_WHITE);
-
-        oled.draw_float(&oled, 13, 1, imu_data.angle.x, 2, OLED_COLOR_WHITE);
-        oled.draw_float(&oled, 13, 2, imu_data.angle.y, 2, OLED_COLOR_WHITE);
-        oled.draw_float(&oled, 13, 3, imu_data.angle.z, 2, OLED_COLOR_WHITE);
-
-        oled.draw_int(&oled, 0, 4, i++, OLED_COLOR_WHITE);
-
-        // oled.draw_string(&oled, 0, 0, "Hello, OLED!", OLED_COLOR_WHITE);
-
-        // gray.update(&gray);
-        // oled.draw_int(&oled, 0, 1, gray.read_channel(&gray, 0U), OLED_COLOR_WHITE);
-        // oled.draw_int(&oled, 0, 2, gray.read_channel(&gray, 1U), OLED_COLOR_WHITE);
-        // oled.draw_int(&oled, 0, 3, gray.read_channel(&gray, 2U), OLED_COLOR_WHITE);
-        // oled.draw_int(&oled, 0, 4, gray.read_channel(&gray, 3U), OLED_COLOR_WHITE);
-
-        // encoder_left.update(&encoder_left, 0.05f);
-        // encoder_right.update(&encoder_right, 0.05f);
-
-        // oled.draw_int(&oled, 0, 0, encoder_left.get_count(&encoder_left), OLED_COLOR_WHITE);
-        // oled.draw_int(&oled, 0, 1, encoder_right.get_count(&encoder_right), OLED_COLOR_WHITE);
-
-
-
-        oled.refresh(&oled);
         osDelay(50);
     }
+}
+
+static void oledDrawDefaultPage(void)
+{
+    ImuData_t imu_data;
+
+    imu0.get_data(&imu0, &imu_data);
+    oled.draw_string(&oled, 0, 0, "mode:", OLED_COLOR_WHITE);
+    oled.draw_int(&oled, 5, 0, mode, OLED_COLOR_WHITE);
+}
+
+static void oledDrawBallPage(void)
+{
+    float target;
+    float real;
+
+    taskENTER_CRITICAL();
+    target = ball_target;
+    real = ball_real;
+    taskEXIT_CRITICAL();
+
+    oled.draw_string(&oled, 0, 0, "BALL MENU", OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 0, 2, "target:", OLED_COLOR_WHITE);
+    oled.draw_float(&oled, 8, 2, target, 2, OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 0, 4, "real:", OLED_COLOR_WHITE);
+    oled.draw_float(&oled, 8, 4, real, 2, OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 0, 6, "K1 short: save", OLED_COLOR_WHITE);
 }
 
 static void imuParseTask(void *argument)
@@ -317,7 +336,16 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
     {
         if (event == KEY_EVENT_PRESS)
         {
-            led_green.toggle(&led_green);
+            key1_press_tick = HAL_GetTickFromISR();
+            key1_pressed = true;
+            key1_long_press_handled = false;
+            key1_release_pending = false;
+        }
+        else if ((event == KEY_EVENT_RELEASE) && key1_pressed)
+        {
+            key1_release_tick = HAL_GetTickFromISR();
+            key1_pressed = false;
+            key1_release_pending = true;
         }
     }
     else if(key == &key2)
@@ -325,6 +353,54 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
         if (event == KEY_EVENT_PRESS)
         {
             led_red.toggle(&led_red);
+        }
+    }
+}
+
+static void key1ProcessEvents(void)
+{
+    uint32_t now_tick = HAL_GetTick();
+    uint32_t press_duration = 0U;
+    bool toggle_menu = false;
+    bool short_press = false;
+
+    taskENTER_CRITICAL();
+    if (key1_pressed && (!key1_long_press_handled) &&
+        ((now_tick - key1_press_tick) >= 2000U))
+    {
+        key1_long_press_handled = true;
+        toggle_menu = true;
+    }
+
+    if (key1_release_pending)
+    {
+        key1_release_pending = false;
+        press_duration = key1_release_tick - key1_press_tick;
+        if (!key1_long_press_handled)
+        {
+            key1_long_press_handled = true;
+            if (press_duration >= 2000U)
+                toggle_menu = true;
+            else
+                short_press = true;
+        }
+    }
+    taskEXIT_CRITICAL();
+
+    if (toggle_menu)
+    {
+        ball_menu_active = !ball_menu_active;
+    }
+    else if (short_press)
+    {
+        if (ball_menu_active)
+        {
+            ball_target = ball_real;
+        }
+        else
+        {
+            mode = ((mode < 2U) || (mode >= 6U)) ?
+                   2U : (uint8_t)(mode + 1U);
         }
     }
 }

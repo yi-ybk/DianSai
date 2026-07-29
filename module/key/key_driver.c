@@ -249,7 +249,7 @@ static void KeyGpioCallback(GPIOInstance *gpio)
     if (!key->initialized)
         return;
 
-    now_tick = HAL_GetTick();
+    now_tick = HAL_GetTickFromISR();
     if ((key->init_config.debounce_ms > 0U) &&
         ((now_tick - key->data.last_event_tick) < key->init_config.debounce_ms))
     {
