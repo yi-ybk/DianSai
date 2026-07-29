@@ -22,7 +22,7 @@ DMA回调只搬运字节，不解析协议，也不执行用户业务回调。�
 - 在SysConfig中为从机通信配置一个UART、其RX DMA、DMA完成中断和RX超时中断。
 - UART应使用与主机一致的波特率、数据位、校验和停止位。
 - 一个UART只能被一个 `USARTRegister()` 用户占用。
-- 当前工程已经配置 `UART_SLAVER`：UART0、PA0/TX、PA1/RX、115200 baud、DMA通道1。
+- 当前工程已经配置 `UART_SLAVER`：UART3、PB12/TX、PB13/RX、115200 baud、DMA通道1。
 - `UART_IMU0` 已被IMU使用，不能再绑定给 `Slaver_t`。
 - `Slaver_t` 依赖FreeRTOS流缓冲，必须在FreeRTOS可用的工程中使用。
 
@@ -166,7 +166,62 @@ static void UserFrameReceived(Slaver_t *slaver,
 字节转换函数由 `module/algorithm/user_lib.h` 提供。只有协议字段确实使用IEEE 754
 浮点数时才应调用浮点转换函数。
 
-## 7. 初始化和任务启动
+## 7. 固定长度float协议
+
+模块已提供固定7字节float协议辅助接口，帧格式如下：
+
+```text
+帧头(1) | float小端序(4) | 校验和(1) | 帧尾(1)
+```
+
+校验和为帧头和4个float数据字节的8位累加和，不包含校验和自身和帧尾。该协议没有应用层帧队列；
+每接收一帧校验通过的数据，只会覆盖保存 `protocol.latest.value`，适合只关心最新控制量的场景。
+
+```c
+static SlaverSimpleFloatProtocol_t protocol;
+
+static const SlaverSimpleFloatProtocolConfig_t protocol_config = {
+    .frame_header = 0xA5U,
+    .frame_tail = 0x5AU,
+    .frame_length = 7U,
+};
+
+(void)SlaverSimpleFloatProtocolInit(&protocol, &protocol_config);
+
+static const SlaverInitConfig_t slaver_config = {
+    .header = {0xA5U},
+    .header_length = 1U,
+    .frame_length_callback = SlaverSimpleFloatFrameLength,
+    .frame_validate_callback = SlaverSimpleFloatFrameValidate,
+    .frame_callback = SlaverSimpleFloatFrameReceived,
+    .protocol_context = &protocol,
+    /* UART、DMA和中断配置见下一节。 */
+};
+```
+
+在其他任务中读取最新值：
+
+```c
+SlaverSimpleFloatData_t latest;
+
+SlaverSimpleFloatGetLatest(&protocol, &latest);
+if (latest.valid)
+{
+    float control_value = latest.value;
+    /* 使用control_value。 */
+}
+```
+
+发送一帧：
+
+```c
+(void)SlaverSimpleFloatSend(&slaver, &protocol, 12.5f);
+```
+
+帧头、帧尾和帧长由 `SlaverSimpleFloatProtocolConfig_t` 配置；当前float协议的帧长必须为7。
+`SlaverInitConfig_t.header` 用于底层帧同步，应与 `protocol_config.frame_header` 保持一致。
+
+## 8. 初始化和任务启动
 
 先定义对象与初始化配置：
 
@@ -249,7 +304,7 @@ for (;;)
 
 不要同时创建 `SlaverTask` 和调用 `slaver.process()` 的外部任务。
 
-## 8. 发送数据
+## 9. 发送数据
 
 `send()` 不自动添加帧头、长度、校验或帧尾。应用层应先按自己的协议组帧，再发送：
 
@@ -265,7 +320,7 @@ if (!slaver.send(&slaver, frame, sizeof(frame)))
 `send()` 为阻塞调用，不应在中断回调中使用。多个任务同时发送时，后发任务可能因UART忙而
 失败；需要多任务连续发送时，应由应用层建立单一发送任务或发送队列。
 
-## 9. 获取状态与排查
+## 10. 获取状态与排查
 
 ```c
 SlaverData_t slaver_data;
@@ -291,7 +346,7 @@ slaver.get_data(&slaver, &slaver_data);
 - `SlaverInit()` 返回 `false`：检查UART是否已经被IMU等模块注册，或配置范围是否超过
   `USART_RXBUFF_LIMIT`、`SLAVER_MAX_HEADER_LENGTH`。
 
-## 10. 使用约束
+## 11. 使用约束
 
 - `header_length` 范围为1至 `SLAVER_MAX_HEADER_LENGTH`。
 - 单帧最大长度不能超过 `SLAVER_PARSE_BUFFER_SIZE`，当前为256字节。

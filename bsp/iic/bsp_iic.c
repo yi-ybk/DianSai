@@ -474,17 +474,27 @@ static uint8_t IICSoftReadByte(const IICInstance *iic, uint8_t ack)
 
 static uint8_t IICSoftTransmit(IICInstance *iic, const uint8_t *data, uint16_t size)
 {
+    uint32_t primask;
+    uint8_t result = 0U;
+
     if ((iic == NULL) || (data == NULL) || (size == 0U))
         return 0U;
 
+    /*
+     * 软件 IIC 与按键中断共用 GPIOA。单个短报文发送期间屏蔽中断，避免 ISR
+     * 插入 SCL/SDA 翻转过程；OLED 数据已按 16 字节分块，不会包住整屏刷新。
+     */
+    primask = __get_PRIMASK();
+    __disable_irq();
+
     if ((!IICSoftBusIsIdle(iic)) && (!IICSoftRecoverBus(iic)))
-        return 0U;
+        goto exit;
 
     IICSoftStart(iic);
     if (!IICSoftWriteByte(iic, (uint8_t)(iic->dev_address << 1U)))
     {
         IICSoftStop(iic);
-        return 0U;
+        goto exit;
     }
 
     for (uint16_t i = 0; i < size; i++)
@@ -492,12 +502,18 @@ static uint8_t IICSoftTransmit(IICInstance *iic, const uint8_t *data, uint16_t s
         if (!IICSoftWriteByte(iic, data[i]))
         {
             IICSoftStop(iic);
-            return 0U;
+            goto exit;
         }
     }
 
     IICSoftStop(iic);
-    return 1U;
+    result = 1U;
+
+exit:
+    if (primask == 0U)
+        __enable_irq();
+
+    return result;
 }
 
 static uint8_t IICSoftReceive(IICInstance *iic, uint8_t *data, uint16_t size)
