@@ -1,0 +1,41 @@
+{
+    "git.enabled": true,
+    "git.path": "C:\\Program Files\\Git\\bin\\git.exe",
+    "git.autoRepositoryDetection": false,
+    "git.openRepositoryInParentFolders": "never",
+    "git.ignoredRepositories": [
+        "D:\\"
+    ],
+    "git.repositoryScanMaxDepth": 1,
+    "git.scanRepositories": [],
+    "C_Cpp.intelliSenseCachePath": "${workspaceFolder}/.vscode/ipch",
+    "files.watcherExclude": {
+        "**/.git/objects/**": true,
+        "**/.git/subtree-cache/**": true,
+        "**/.vscode/ipch/**": true
+    },
+    "search.exclude": {
+        "**/.git/**": true,
+        "**/.vscode/ipch/**": true,
+        "**/.clangd": true,
+        "**/.theia/**": true,
+        "**/.codex/**": true,
+        "**/Debug/**": true,
+        "**/Release/**": true
+    },
+    "files.exclude": {
+        "**/.git": true,
+        "**/.vscode/ipch": true,
+        "**/.clangd": true,
+        "**/.theia": true,
+        "**/.codex": true,
+        "**/Debug": true,
+        "**/Release": true,
+        "**/.cproject": true,
+        "**/.ccsproject": true,
+        "**/.project": true,
+        "**/mspm0g3507.cmd": true,
+        "**/README.html": true,
+        "**/syscfg_c.rov.xs": true
+    }
+}

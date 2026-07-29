@@ -1,0 +1,69 @@
+{
+    "configurations": [
+        {
+            "name": "MSPM0G3507",
+            "compilerPath": "C:/TI/ccs2100/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/bin/tiarmclang.exe",
+            "intelliSenseMode": "windows-clang-arm",
+            "compilerArgs": [
+                "-march=thumbv6m",
+                "-mcpu=cortex-m0plus",
+                "-mfloat-abi=soft",
+                "-mlittle-endian",
+                "-mthumb"
+            ],
+            "defines": [
+                "__MSPM0G3507__"
+            ],
+            "includePath": [
+                "${workspaceFolder}",
+                "${workspaceFolder}/application",
+                "${workspaceFolder}/application/chassis",
+                "${workspaceFolder}/application/gimbal",
+                "${workspaceFolder}/bsp",
+                "${workspaceFolder}/bsp/can",
+                "${workspaceFolder}/bsp/gpio",
+                "${workspaceFolder}/bsp/iic",
+                "${workspaceFolder}/bsp/pwm",
+                "${workspaceFolder}/bsp/spi",
+                "${workspaceFolder}/bsp/tim",
+                "${workspaceFolder}/bsp/usart",
+                "${workspaceFolder}/module/algorithm",
+                "${workspaceFolder}/module/buzzer",
+                "${workspaceFolder}/module/encoder",
+                "${workspaceFolder}/module/gray",
+                "${workspaceFolder}/module/imu",
+                "${workspaceFolder}/module/key",
+                "${workspaceFolder}/module/led",
+                "${workspaceFolder}/module/motor",
+                "${workspaceFolder}/module/nrf24l01",
+                "${workspaceFolder}/module/oled",
+                "${workspaceFolder}/module/pid",
+                "${workspaceFolder}/module/stepmotor",
+                "${workspaceFolder}/module/usart",
+                "${workspaceFolder}/module/wheel",
+                "${workspaceFolder}/module/zhangdatou_42",
+                "${workspaceFolder}/Debug/syscfg",
+                "C:/TI/mspm0_sdk_2_11_00_07/source",
+                "C:/TI/mspm0_sdk_2_11_00_07/source/third_party/CMSIS/Core/Include",
+                "C:/TI/mspm0_sdk_2_11_00_07/source/third_party/CMSIS/DSP/Include",
+                "C:/TI/mspm0_sdk_2_11_00_07/kernel/freertos/Source/include",
+                "C:/TI/mspm0_sdk_2_11_00_07/kernel/freertos/Source/portable/TI_ARM_CLANG/ARM_CM0",
+                "C:/TI/mspm0_sdk_2_11_00_07/source/ti/posix/ticlang",
+                "${workspaceFolder}/../freertos_builds_LP_MSPM0G3507_release_ticlang"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}",
+                    "${workspaceFolder}/Debug/syscfg",
+                    "C:/TI/mspm0_sdk_2_11_00_07/source",
+                    "C:/TI/mspm0_sdk_2_11_00_07/kernel/freertos/Source/include",
+                    "C:/TI/mspm0_sdk_2_11_00_07/kernel/freertos/Source/portable/TI_ARM_CLANG/ARM_CM0",
+                    "${workspaceFolder}/../freertos_builds_LP_MSPM0G3507_release_ticlang"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            },
+            "cStandard": "c11"
+        }
+    ],
+    "version": 4
+}
