@@ -56,6 +56,21 @@ USARTInstance *USARTRegister(USART_Init_Config_s *init_config)
     return instance;
 }
 
+bool USARTIsRegistered(const UART_HandleTypeDef *usart_handle)
+{
+    uint8_t instance_index;
+
+    if (usart_handle == NULL)
+        return false;
+
+    for (instance_index = 0U; instance_index < idx; ++instance_index)
+    {
+        if (usart_instance[instance_index]->usart_handle == usart_handle)
+            return true;
+    }
+    return false;
+}
+
 void USARTServiceInit(USARTInstance *instance)
 {
     if ((instance == NULL) || (instance->usart_handle == NULL) ||

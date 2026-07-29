@@ -1,4 +1,7 @@
 {
+    "env": {
+        "mspm0SdkRoot": "C:/TI/mspm0_sdk_2_11_00_07"
+    },
     "configurations": [
         {
             "name": "MSPM0G3507",

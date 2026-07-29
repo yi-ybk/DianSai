@@ -4,7 +4,6 @@
 #include "bsp_can.h"
 
 #include "led_driver.h"
-#include "buzzer_driver.h"
 
 #include "oled_driver.h"
 
@@ -27,9 +26,11 @@ static void oledTask(void *argument);
 static void imuParseTask(void *argument);
 static void trackTask(void *argument);
 
+static void key1ProcessEvents(void);
+static void oledDrawDefaultPage(void);
+static void oledDrawBallPage(void);
 static void trackInit(void);
 static void ledInit(void);
-static void buzzerInit(void);
 static void oledInit(void);
 static void keyInit(void);
 static void grayInit(void);
@@ -85,8 +86,6 @@ const osThreadAttr_t trackTask_attributes = {
 Led_t led_green = { LED_OBJECT_DEFAULT };
 Led_t led_red   = { LED_OBJECT_DEFAULT };
 Led_t led_blue  = { LED_OBJECT_DEFAULT };
-
-Buzzer_t buzzer = { BUZZER_OBJECT_DEFAULT };
 
 Oled_t oled = { OLED_OBJECT_DEFAULT };
 
@@ -158,6 +157,20 @@ Imu_t imu0 = {
             .device_context = NULL,
         },
 };
+
+float ball_target = 0.0f;
+float ball_real   = 10.0f;
+
+volatile uint8_t mode = 2U;
+volatile uint32_t oled_refresh_error_count = 0U;
+volatile uint32_t oled_recovery_count = 0U;
+
+static volatile bool ball_menu_active = false;
+static bool key1_sample_pressed = false;
+static bool key1_stable_pressed = false;
+static bool key1_long_press_handled = false;
+static uint32_t key1_sample_change_tick = 0U;
+static uint32_t key1_press_tick = 0U;
 /*******************************/
 
 void robotInit(void)
@@ -197,56 +210,77 @@ static void testTask(void *argument)
     }
 }
 
-void oledTask(void *argument)
+static void oledTask(void *argument)
 {
+    bool menu_active;
+    bool refresh_ok;
+    uint32_t last_recovery_tick;
+
     (void)argument;
-    oled.draw_string(&oled, 0, 0,  "acc:", OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 0, 1,  "x:"  , OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 0, 2,  "y:"  , OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 0, 3,  "z:"  , OLED_COLOR_WHITE);
-
-    oled.draw_string(&oled, 10, 0, "angle:", OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 10, 1, "x:"    , OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 10, 2, "y:"    , OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 10, 3, "z:"    , OLED_COLOR_WHITE);
-
-    int32_t i = 0;
+    last_recovery_tick = HAL_GetTick();
 
     while (1)
     {
+        key1ProcessEvents();
+        menu_active = ball_menu_active;
+        oled.fill(&oled, OLED_COLOR_BLACK);
+        if (menu_active)
+            oledDrawBallPage();
+        else
+            oledDrawDefaultPage();
 
-        ImuData_t imu_data;
-        imu0.get_data(&imu0, &imu_data);
+        refresh_ok = oled.refresh(&oled);
+        if (!refresh_ok)
+        {
+            osDelay(5);
+            refresh_ok = oled.refresh(&oled);
+        }
 
-        oled.draw_float(&oled, 3, 1, imu_data.accel.x, 2, OLED_COLOR_WHITE);
-        oled.draw_float(&oled, 3, 2, imu_data.accel.y, 2, OLED_COLOR_WHITE);
-        oled.draw_float(&oled, 3, 3, imu_data.accel.z, 2, OLED_COLOR_WHITE);
+        if (!refresh_ok)
+        {
+            oled_refresh_error_count++;
+            if (oled.recover(&oled))
+                oled_recovery_count++;
+            last_recovery_tick = HAL_GetTick();
+        }
+        else if ((HAL_GetTick() - last_recovery_tick) >= 5000U)
+        {
+            if (oled.recover(&oled))
+                oled_recovery_count++;
+            else
+                oled_refresh_error_count++;
+            last_recovery_tick = HAL_GetTick();
+        }
 
-        oled.draw_float(&oled, 13, 1, imu_data.angle.x, 2, OLED_COLOR_WHITE);
-        oled.draw_float(&oled, 13, 2, imu_data.angle.y, 2, OLED_COLOR_WHITE);
-        oled.draw_float(&oled, 13, 3, imu_data.angle.z, 2, OLED_COLOR_WHITE);
-
-        oled.draw_int(&oled, 0, 4, i++, OLED_COLOR_WHITE);
-
-        // oled.draw_string(&oled, 0, 0, "Hello, OLED!", OLED_COLOR_WHITE);
-
-        // gray.update(&gray);
-        // oled.draw_int(&oled, 0, 1, gray.read_channel(&gray, 0U), OLED_COLOR_WHITE);
-        // oled.draw_int(&oled, 0, 2, gray.read_channel(&gray, 1U), OLED_COLOR_WHITE);
-        // oled.draw_int(&oled, 0, 3, gray.read_channel(&gray, 2U), OLED_COLOR_WHITE);
-        // oled.draw_int(&oled, 0, 4, gray.read_channel(&gray, 3U), OLED_COLOR_WHITE);
-
-        // encoder_left.update(&encoder_left, 0.05f);
-        // encoder_right.update(&encoder_right, 0.05f);
-
-        // oled.draw_int(&oled, 0, 0, encoder_left.get_count(&encoder_left), OLED_COLOR_WHITE);
-        // oled.draw_int(&oled, 0, 1, encoder_right.get_count(&encoder_right), OLED_COLOR_WHITE);
-
-
-
-        oled.refresh(&oled);
         osDelay(50);
     }
+}
+
+static void oledDrawDefaultPage(void)
+{
+    ImuData_t imu_data;
+
+    imu0.get_data(&imu0, &imu_data);
+    oled.draw_string(&oled, 0, 0, "mode:", OLED_COLOR_WHITE);
+    oled.draw_int(&oled, 5, 0, mode, OLED_COLOR_WHITE);
+}
+
+static void oledDrawBallPage(void)
+{
+    float target;
+    float real;
+
+    taskENTER_CRITICAL();
+    target = ball_target;
+    real = ball_real;
+    taskEXIT_CRITICAL();
+
+    oled.draw_string(&oled, 0, 0, "BALL MENU", OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 0, 2, "target:", OLED_COLOR_WHITE);
+    oled.draw_float(&oled, 8, 2, target, 2, OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 0, 4, "real:", OLED_COLOR_WHITE);
+    oled.draw_float(&oled, 8, 4, real, 2, OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 0, 6, "K1 short: save", OLED_COLOR_WHITE);
 }
 
 static void imuParseTask(void *argument)
@@ -299,35 +333,6 @@ static void trackTask(void *argument)
     {
         turn_speed = track.update(&track, 0.02f);
         chassis.set_velocity(&chassis, 0.1, -turn_speed);
-        if(turn_speed>0)
-        {
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(turn_speed/10)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(turn_speed)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, '.');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(turn_speed*10)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(turn_speed*100)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, ' ');
-        }
-        else {
-            DL_UART_Main_transmitData(UART_imudate_INST, '-');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(-turn_speed/10)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(-turn_speed)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, '.');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(-turn_speed*10)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(-turn_speed*100)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, ' ');
-        }
         osDelay(20);
     }
 }
@@ -346,19 +351,66 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
 {
     (void)context;
 
-    if(key == &key1)
-    {
-        if (event == KEY_EVENT_PRESS)
-        {
-            led_green.toggle(&led_green);
-        }
-    }
-    else if(key == &key2)
+    if(key == &key2)
     {
         if (event == KEY_EVENT_PRESS)
         {
             led_red.toggle(&led_red);
-            buzzer.toggle(&buzzer);
+        }
+    }
+}
+
+static void key1ProcessEvents(void)
+{
+    uint32_t now_tick = HAL_GetTick();
+    bool sampled_pressed;
+    bool toggle_menu = false;
+    bool short_press = false;
+
+    sampled_pressed = (key1.read(&key1) == KEY_STATE_PRESSED);
+    if (sampled_pressed != key1_sample_pressed)
+    {
+        key1_sample_pressed = sampled_pressed;
+        key1_sample_change_tick = now_tick;
+    }
+
+    if ((key1_sample_pressed != key1_stable_pressed) &&
+        ((now_tick - key1_sample_change_tick) >= key1.init_config.debounce_ms))
+    {
+        key1_stable_pressed = key1_sample_pressed;
+        if (key1_stable_pressed)
+        {
+            key1_press_tick = now_tick;
+            key1_long_press_handled = false;
+        }
+        else if (!key1_long_press_handled)
+        {
+            key1_long_press_handled = true;
+            short_press = true;
+        }
+    }
+
+    if (key1_stable_pressed && (!key1_long_press_handled) &&
+        ((now_tick - key1_press_tick) >= 2000U))
+    {
+        key1_long_press_handled = true;
+        toggle_menu = true;
+    }
+
+    if (toggle_menu)
+    {
+        ball_menu_active = !ball_menu_active;
+    }
+    else if (short_press)
+    {
+        if (ball_menu_active)
+        {
+            ball_target = ball_real;
+        }
+        else
+        {
+            mode = ((mode < 2U) || (mode >= 6U)) ?
+                   2U : (uint8_t)(mode + 1U);
         }
     }
 }
@@ -389,22 +441,6 @@ static void ledInit(void){
     led_green.init(&led_green, &led_green_config);
     led_red.init(&led_red, &led_red_config);
     led_blue.init(&led_blue, &led_blue_config);
-}
-
-static void buzzerInit(void)
-{
-    const BuzzerInitConfig_t buzzer_config = {
-        .type = BUZZER_TYPE_ACTIVE_GPIO,
-        .gpio = {
-            .GPIOx        = GPIO_BUZZER_PORT,
-            .GPIO_Pin     = GPIO_BUZZER_BUZZER_A30_PIN,
-            .active_state = GPIO_PIN_RESET,
-        },
-        .init_state = BUZZER_STATE_OFF,
-        .id         = &buzzer,
-    };
-
-    configASSERT(buzzer.init(&buzzer, &buzzer_config));
 }
 
 void oledInit(void){
@@ -451,6 +487,10 @@ static void keyInit(void){
     };
     key1.init(&key1, &key1_config);
     key2.init(&key2, &key2_config);
+    key1_sample_pressed = (key1.read(&key1) == KEY_STATE_PRESSED);
+    key1_stable_pressed = key1_sample_pressed;
+    key1_sample_change_tick = HAL_GetTick();
+    key1_press_tick = key1_sample_change_tick;
 
     NVIC_ClearPendingIRQ(GPIO_MULTIPLE_GPIOA_INT_IRQN);
     NVIC_SetPriority(GPIO_MULTIPLE_GPIOA_INT_IRQN, 2U);
@@ -543,8 +583,6 @@ void grayInit(void){
 }
 
 static void trackInit(void){
-    static const float track_weights[8] = { -3.5f, -2.5f, -1.5f, -0.5f, 0.5f, 1.5f, 2.5f, 3.5f };
-
     const TrackInitConfig_t track_config = {
         .gray = &gray,
         .channel_count = 8U,

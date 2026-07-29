@@ -114,6 +114,7 @@ static const uint8_t oled_font_5x7[][5] =
 
 static void OledBindMethods(Oled_t *oled);
 static bool OledConfigIsValid(const OledInitConfig_t *config);
+static bool OledConfigureController(Oled_t *oled, bool disable_display);
 static bool OledWriteCommand(Oled_t *oled, uint8_t command);
 static bool OledWriteData(Oled_t *oled, const uint8_t *data, uint16_t size);
 static uint8_t OledGetFontColumn(char ch, uint8_t column);
@@ -160,8 +161,44 @@ bool OledInit(Oled_t *oled, const OledInitConfig_t *config)
     oled->data.width = width;
     oled->data.height = height;
 
-    if ((!OledWriteCommand(oled, 0xAEU)) ||
-        (!OledWriteCommand(oled, 0x20U)) ||
+    if (!OledConfigureController(oled, true))
+        return false;
+
+    oled->initialized = true;
+    OledFill(oled, OLED_COLOR_BLACK);
+    if (!OledRefreshAll(oled))
+        return false;
+
+    return OledSetDisplay(oled, true);
+}
+
+bool OledRecover(Oled_t *oled)
+{
+    if ((oled == NULL) || (oled->iic == NULL))
+        return false;
+
+    if (!OledConfigureController(oled, false))
+        return false;
+
+    oled->initialized = true;
+    if (!OledRefreshAll(oled))
+        return false;
+
+    return OledSetDisplay(oled, true);
+}
+
+static bool OledConfigureController(Oled_t *oled, bool disable_display)
+{
+    uint16_t height;
+
+    if ((oled == NULL) || (oled->iic == NULL))
+        return false;
+
+    height = oled->data.height;
+    if (disable_display && (!OledWriteCommand(oled, 0xAEU)))
+        return false;
+
+    if ((!OledWriteCommand(oled, 0x20U)) ||
         (!OledWriteCommand(oled, 0x02U)) ||
         (!OledWriteCommand(oled, 0xB0U)) ||
         (!OledWriteCommand(oled, oled->init_config.rotate_180 ? 0xC0U : 0xC8U)) ||
@@ -191,10 +228,7 @@ bool OledInit(Oled_t *oled, const OledInitConfig_t *config)
         return false;
     }
 
-    oled->initialized = true;
-    OledClear(oled);
-
-    return OledSetDisplay(oled, true);
+    return true;
 }
 
 bool OledRefresh(Oled_t *oled)
@@ -523,6 +557,7 @@ static void OledBindMethods(Oled_t *oled)
         return;
 
     oled->init          = OledInit;
+    oled->recover       = OledRecover;
     oled->refresh       = OledRefresh;
     oled->refresh_all   = OledRefreshAll;
     oled->clear         = OledClear;

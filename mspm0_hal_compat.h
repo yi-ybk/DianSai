@@ -82,6 +82,7 @@ static inline void HAL_GPIO_TogglePin(GPIO_TypeDef *gpio, uint32_t pins) { DL_GP
 static inline GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *gpio, uint32_t pins) { return (DL_GPIO_readPins(gpio, pins) != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET; }
 static inline void HAL_GPIO_Init(GPIO_TypeDef *gpio, GPIO_InitTypeDef *config) { (void)gpio; (void)config; }
 static inline uint32_t HAL_GetTick(void) { return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS); }
+static inline uint32_t HAL_GetTickFromISR(void) { return (uint32_t)(xTaskGetTickCountFromISR() * portTICK_PERIOD_MS); }
 
 static inline HAL_StatusTypeDef HAL_TIM_Base_Start(TIM_HandleTypeDef *timer) { if ((timer == NULL) || (timer->Instance == NULL)) return HAL_ERROR; DL_TimerG_startCounter(timer->Instance); return HAL_OK; }
 static inline HAL_StatusTypeDef HAL_TIM_Base_Stop(TIM_HandleTypeDef *timer) { if ((timer == NULL) || (timer->Instance == NULL)) return HAL_ERROR; DL_TimerG_stopCounter(timer->Instance); return HAL_OK; }

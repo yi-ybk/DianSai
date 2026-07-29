@@ -58,6 +58,7 @@ struct Oled
     uint8_t dirty_pages;
 
     bool (*init)(Oled_t *oled, const OledInitConfig_t *config);
+    bool (*recover)(Oled_t *oled);
     bool (*refresh)(Oled_t *oled);
     bool (*refresh_all)(Oled_t *oled);
     void (*clear)(Oled_t *oled);
@@ -78,6 +79,7 @@ struct Oled
 
 /** @brief 初始化OLED对象 */
 bool OledInit(Oled_t *oled, const OledInitConfig_t *config);
+bool OledRecover(Oled_t *oled);
 /** @brief 将发生变化的显存页刷新到OLED屏幕 */
 bool OledRefresh(Oled_t *oled);
 /** @brief 将完整显存强制刷新到OLED屏幕 */
@@ -151,6 +153,7 @@ void OledGetData(Oled_t *oled, OledData_t *data);
 
 #define OLED_OBJECT_DEFAULT                \
         .init         = OledInit,          \
+        .recover      = OledRecover,       \
         .refresh      = OledRefresh,       \
         .refresh_all  = OledRefreshAll,    \
         .clear        = OledClear,         \
