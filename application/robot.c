@@ -201,11 +201,15 @@ volatile uint32_t oled_refresh_error_count = 0U;
 volatile uint32_t oled_recovery_count = 0U;
 
 static volatile bool ball_menu_active = false;
-static bool key1_sample_pressed = false;
-static bool key1_stable_pressed = false;
-static bool key1_long_press_handled = false;
-static uint32_t key1_sample_change_tick = 0U;
-static uint32_t key1_press_tick = 0U;
+static volatile bool key1_irq_pressed = false;
+static volatile bool key1_oled_recovery_pending = false;
+static volatile uint32_t key1_irq_press_tick = 0U;
+static volatile uint32_t key1_irq_short_count = 0U;
+static volatile uint32_t key1_irq_long_count = 0U;
+static volatile uint32_t key1_irq_edge_tick = 0U;
+static uint32_t key1_handled_short_count = 0U;
+static uint32_t key1_handled_long_count = 0U;
+static uint32_t key1_last_action_tick = 0U;
 /************************************/
 
 void robotInit(void)
@@ -251,55 +255,75 @@ static void oledTask(void *argument)
 {
     bool menu_active;
     bool refresh_ok;
-    uint32_t last_recovery_tick;
+    uint32_t last_refresh_tick;
 
     (void)argument;
-    last_recovery_tick = HAL_GetTick();
+    last_refresh_tick = HAL_GetTick() - 200U;
 
     while (1)
     {
         key1ProcessEvents();
-        menu_active = ball_menu_active;
-        oled.fill(&oled, OLED_COLOR_BLACK);
-        if (menu_active)
-            oledDrawBallPage();
-        else
-            oledDrawDefaultPage();
 
-        refresh_ok = oled.refresh(&oled);
-        if (!refresh_ok)
+        if ((HAL_GetTick() - last_refresh_tick) >= 200U)
         {
-            osDelay(5);
-            refresh_ok = oled.refresh(&oled);
-        }
-
-        if (!refresh_ok)
-        {
-            oled_refresh_error_count++;
-            if (oled.recover(&oled))
-                oled_recovery_count++;
-            last_recovery_tick = HAL_GetTick();
-        }
-        else if ((HAL_GetTick() - last_recovery_tick) >= 5000U)
-        {
-            if (oled.recover(&oled))
-                oled_recovery_count++;
+            menu_active = ball_menu_active;
+            oled.fill(&oled, OLED_COLOR_BLACK);
+            if (menu_active)
+                oledDrawBallPage();
             else
+                oledDrawDefaultPage();
+
+            refresh_ok = oled.refresh(&oled);
+            if (!refresh_ok)
+            {
+                osDelay(5);
+                refresh_ok = oled.refresh(&oled);
+            }
+
+            if (!refresh_ok)
+            {
                 oled_refresh_error_count++;
-            last_recovery_tick = HAL_GetTick();
+                if (oled.recover(&oled))
+                    oled_recovery_count++;
+            }
+
+            last_refresh_tick = HAL_GetTick();
         }
 
-        osDelay(50);
+        osDelay(10);
     }
 }
 
 static void oledDrawDefaultPage(void)
 {
     ImuData_t imu_data;
+    uint32_t elapsed_ms;
+    uint32_t total_seconds;
+    uint32_t hours;
+    uint32_t minutes;
+    uint32_t seconds;
+    uint32_t tenths;
+    char time_text[] = "TIME 00:00:00.0";
 
     imu0.get_data(&imu0, &imu_data);
     oled.draw_string(&oled, 0, 0, "mode:", OLED_COLOR_WHITE);
     oled.draw_int(&oled, 5, 0, mode, OLED_COLOR_WHITE);
+
+    elapsed_ms = HAL_GetTick();
+    total_seconds = elapsed_ms / 1000U;
+    hours = (total_seconds / 3600U) % 100U;
+    minutes = (total_seconds / 60U) % 60U;
+    seconds = total_seconds % 60U;
+    tenths = (elapsed_ms / 100U) % 10U;
+
+    time_text[5]  = (char)('0' + (hours / 10U));
+    time_text[6]  = (char)('0' + (hours % 10U));
+    time_text[8]  = (char)('0' + (minutes / 10U));
+    time_text[9]  = (char)('0' + (minutes % 10U));
+    time_text[11] = (char)('0' + (seconds / 10U));
+    time_text[12] = (char)('0' + (seconds % 10U));
+    time_text[14] = (char)('0' + tenths);
+    oled.draw_string(&oled, 0, 1, time_text, OLED_COLOR_WHITE);
 }
 
 static void oledDrawBallPage(void)
@@ -455,7 +479,24 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
 {
     (void)context;
 
-    if(key == &key2)
+    if (key == &key1)
+    {
+        if (event == KEY_EVENT_PRESS)
+        {
+            key1_irq_press_tick = key->data.last_event_tick;
+            key1_irq_pressed = true;
+        }
+        else if ((event == KEY_EVENT_RELEASE) && key1_irq_pressed)
+        {
+            if ((key->data.last_event_tick - key1_irq_press_tick) >= 2000U)
+                key1_irq_long_count++;
+            else
+                key1_irq_short_count++;
+
+            key1_irq_pressed = false;
+        }
+    }
+    else if (key == &key2)
     {
         if (event == KEY_EVENT_PRESS)
         {
@@ -467,46 +508,61 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
 static void key1ProcessEvents(void)
 {
     uint32_t now_tick = HAL_GetTick();
-    bool sampled_pressed;
-    bool toggle_menu = false;
-    bool short_press = false;
+    uint32_t short_count;
+    uint32_t long_count;
+    uint32_t edge_tick;
+    bool recover_oled = false;
+    bool toggle_menu;
+    bool short_press;
 
-    sampled_pressed = (key1.read(&key1) == KEY_STATE_PRESSED);
-    if (sampled_pressed != key1_sample_pressed)
+    taskENTER_CRITICAL();
+    short_count = key1_irq_short_count;
+    long_count = key1_irq_long_count;
+    edge_tick = key1_irq_edge_tick;
+    if (key1_oled_recovery_pending &&
+        ((now_tick - edge_tick) >= 100U))
     {
-        key1_sample_pressed = sampled_pressed;
-        key1_sample_change_tick = now_tick;
+        key1_oled_recovery_pending = false;
+        recover_oled = true;
+    }
+    taskEXIT_CRITICAL();
+
+    short_press = (short_count != key1_handled_short_count);
+    toggle_menu = (long_count != key1_handled_long_count);
+    key1_handled_short_count = short_count;
+    key1_handled_long_count = long_count;
+
+    /*
+     * PA18 的按键边沿可能在相邻 PA17（OLED SDA）上产生毛刺。等待机械
+     * 抖动结束后恢复 SSD1306 控制器状态，避免一次毛刺造成永久黑屏。
+     */
+    if (recover_oled)
+    {
+        if (oled.recover(&oled))
+            oled_recovery_count++;
+        else
+            oled_refresh_error_count++;
     }
 
-    if ((key1_sample_pressed != key1_stable_pressed) &&
-        ((now_tick - key1_sample_change_tick) >= key1.init_config.debounce_ms))
+    /*
+     * 机械按键可能在一次完整按压过程中出现超过消抖时间的二次跳变。
+     * 对已经确认的动作增加锁定窗口，避免一次按键让 mode 连跳两次。
+     */
+    if ((toggle_menu || short_press) &&
+        ((now_tick - key1_last_action_tick) < 300U))
     {
-        key1_stable_pressed = key1_sample_pressed;
-        if (key1_stable_pressed)
-        {
-            key1_press_tick = now_tick;
-            key1_long_press_handled = false;
-        }
-        else if (!key1_long_press_handled)
-        {
-            key1_long_press_handled = true;
-            short_press = true;
-        }
-    }
-
-    if (key1_stable_pressed && (!key1_long_press_handled) &&
-        ((now_tick - key1_press_tick) >= 2000U))
-    {
-        key1_long_press_handled = true;
-        toggle_menu = true;
+        toggle_menu = false;
+        short_press = false;
     }
 
     if (toggle_menu)
     {
+        key1_last_action_tick = now_tick;
         ball_menu_active = !ball_menu_active;
     }
     else if (short_press)
     {
+        key1_last_action_tick = now_tick;
         if (ball_menu_active)
         {
             ball_target = ball_real;
@@ -576,7 +632,7 @@ static void keyInit(void){
         .GPIO_Pin       = GPIO_PIN_18,
         .active_state   = GPIO_PIN_RESET,
         .exti_mode      = GPIO_EXTI_MODE_RISING_FALLING,
-        .debounce_ms    = 50U,
+        .debounce_ms    = 80U,
         .event_callback = keyEventCallback,
         .event_context  = NULL,
     };
@@ -591,10 +647,10 @@ static void keyInit(void){
     };
     key1.init(&key1, &key1_config);
     key2.init(&key2, &key2_config);
-    key1_sample_pressed = (key1.read(&key1) == KEY_STATE_PRESSED);
-    key1_stable_pressed = key1_sample_pressed;
-    key1_sample_change_tick = HAL_GetTick();
-    key1_press_tick = key1_sample_change_tick;
+    key1_last_action_tick = HAL_GetTick() - 300U;
+
+    DL_GPIO_clearInterruptStatus(GPIOA, GPIO_KEY_KEY_A18_PIN);
+    DL_GPIO_enableInterrupt(GPIOA, GPIO_KEY_KEY_A18_PIN);
 
     NVIC_ClearPendingIRQ(GPIO_MULTIPLE_GPIOA_INT_IRQN);
     NVIC_SetPriority(GPIO_MULTIPLE_GPIOA_INT_IRQN, 2U);
@@ -633,6 +689,8 @@ static void gpioInterruptDispatch(GPIO_TypeDef *GPIOx)
             switch (pending)
             {
                 case GPIO_KEY_KEY_A18_IIDX:
+                    key1_irq_edge_tick = HAL_GetTickFromISR();
+                    key1_oled_recovery_pending = true;
                     GPIOIRQHandler(GPIOx, GPIO_KEY_KEY_A18_PIN);
                     break;
                 case GPIO_ENCODER_ENCODER_RIGHT_A_A08_IIDX:
