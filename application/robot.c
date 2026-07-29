@@ -4,7 +4,6 @@
 #include "bsp_can.h"
 
 #include "led_driver.h"
-#include "buzzer_driver.h"
 
 #include "oled_driver.h"
 
@@ -29,7 +28,6 @@ static void trackTask(void *argument);
 
 static void trackInit(void);
 static void ledInit(void);
-static void buzzerInit(void);
 static void oledInit(void);
 static void keyInit(void);
 static void grayInit(void);
@@ -85,8 +83,6 @@ const osThreadAttr_t trackTask_attributes = {
 Led_t led_green = { LED_OBJECT_DEFAULT };
 Led_t led_red   = { LED_OBJECT_DEFAULT };
 Led_t led_blue  = { LED_OBJECT_DEFAULT };
-
-Buzzer_t buzzer = { BUZZER_OBJECT_DEFAULT };
 
 Oled_t oled = { OLED_OBJECT_DEFAULT };
 
@@ -299,35 +295,6 @@ static void trackTask(void *argument)
     {
         turn_speed = track.update(&track, 0.02f);
         chassis.set_velocity(&chassis, 0.1, -turn_speed);
-        if(turn_speed>0)
-        {
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(turn_speed/10)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(turn_speed)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, '.');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(turn_speed*10)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(turn_speed*100)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, ' ');
-        }
-        else {
-            DL_UART_Main_transmitData(UART_imudate_INST, '-');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(-turn_speed/10)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(-turn_speed)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, '.');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(-turn_speed*10)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, (int)(-turn_speed*100)%10+'0');
-            osDelay(10);
-            DL_UART_Main_transmitData(UART_imudate_INST, ' ');
-        }
         osDelay(20);
     }
 }
@@ -358,7 +325,6 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
         if (event == KEY_EVENT_PRESS)
         {
             led_red.toggle(&led_red);
-            buzzer.toggle(&buzzer);
         }
     }
 }
@@ -389,22 +355,6 @@ static void ledInit(void){
     led_green.init(&led_green, &led_green_config);
     led_red.init(&led_red, &led_red_config);
     led_blue.init(&led_blue, &led_blue_config);
-}
-
-static void buzzerInit(void)
-{
-    const BuzzerInitConfig_t buzzer_config = {
-        .type = BUZZER_TYPE_ACTIVE_GPIO,
-        .gpio = {
-            .GPIOx        = GPIO_BUZZER_PORT,
-            .GPIO_Pin     = GPIO_BUZZER_BUZZER_A30_PIN,
-            .active_state = GPIO_PIN_RESET,
-        },
-        .init_state = BUZZER_STATE_OFF,
-        .id         = &buzzer,
-    };
-
-    configASSERT(buzzer.init(&buzzer, &buzzer_config));
 }
 
 void oledInit(void){
@@ -543,8 +493,6 @@ void grayInit(void){
 }
 
 static void trackInit(void){
-    static const float track_weights[8] = { -3.5f, -2.5f, -1.5f, -0.5f, 0.5f, 1.5f, 2.5f, 3.5f };
-
     const TrackInitConfig_t track_config = {
         .gray = &gray,
         .channel_count = 8U,

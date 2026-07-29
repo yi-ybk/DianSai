@@ -75,6 +75,13 @@ typedef struct
 USARTInstance *USARTRegister(USART_Init_Config_s *init_config);
 
 /**
+ * @brief 判断UART句柄是否已经被USART模块注册
+ * @param usart_handle 待查询的UART句柄
+ * @return bool 已注册返回true，否则返回false
+ */
+bool USARTIsRegistered(const UART_HandleTypeDef *usart_handle);
+
+/**
  * @brief 初始化UART中断接收服务
  * @param instance 串口实例指针
  * @note 需要在对应UART中断服务函数中调用USARTIRQHandler

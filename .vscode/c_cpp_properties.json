@@ -1,4 +1,7 @@
 {
+    "env": {
+        "mspm0SdkRoot": "C:/TI/mspm0_sdk_2_11_00_07"
+    },
     "configurations": [
         {
             "name": "MSPM0G3507",
@@ -13,38 +16,17 @@
             ],
             "includePath": [
                 "${workspaceFolder}",
-                "${workspaceFolder}/application",
-                "${workspaceFolder}/application/chassis",
-                "${workspaceFolder}/application/gimbal",
-                "${workspaceFolder}/bsp",
-                "${workspaceFolder}/bsp/can",
-                "${workspaceFolder}/bsp/gpio",
-                "${workspaceFolder}/bsp/iic",
-                "${workspaceFolder}/bsp/pwm",
-                "${workspaceFolder}/bsp/spi",
-                "${workspaceFolder}/bsp/tim",
-                "${workspaceFolder}/bsp/usart",
-                "${workspaceFolder}/module/algorithm",
-                "${workspaceFolder}/module/buzzer",
-                "${workspaceFolder}/module/encoder",
-                "${workspaceFolder}/module/gray",
-                "${workspaceFolder}/module/imu",
-                "${workspaceFolder}/module/key",
-                "${workspaceFolder}/module/led",
-                "${workspaceFolder}/module/motor",
-                "${workspaceFolder}/module/oled",
-                "${workspaceFolder}/module/pid",
-                "${workspaceFolder}/module/stepmotor",
-                "${workspaceFolder}/module/wheel",
-                "${workspaceFolder}/module/zhangdatou_42",
+                "${workspaceFolder}/application/**",
+                "${workspaceFolder}/bsp/**",
+                "${workspaceFolder}/module/**",
                 "${workspaceFolder}/Debug/syscfg",
-                "C:/TI/mspm0_sdk_2_11_00_07/source",
-                "C:/TI/mspm0_sdk_2_11_00_07/source/third_party/CMSIS/Core/Include",
-                "C:/TI/mspm0_sdk_2_11_00_07/source/third_party/CMSIS/DSP/Include",
-                "C:/TI/mspm0_sdk_2_11_00_07/kernel/freertos/Source/include",
-                "C:/TI/mspm0_sdk_2_11_00_07/kernel/freertos/Source/portable/TI_ARM_CLANG/ARM_CM0",
-                "C:/TI/mspm0_sdk_2_11_00_07/source/ti/posix/ticlang",
-                "D:/STM32Hal/freertos_builds_LP_MSPM0G3507_release_ticlang"
+                "${mspm0SdkRoot}/source",
+                "${mspm0SdkRoot}/source/third_party/CMSIS/Core/Include",
+                "${mspm0SdkRoot}/source/third_party/CMSIS/DSP/Include",
+                "${mspm0SdkRoot}/kernel/freertos/Source/include",
+                "${mspm0SdkRoot}/kernel/freertos/Source/portable/TI_ARM_CLANG/ARM_CM0",
+                "${mspm0SdkRoot}/source/ti/posix/ticlang",
+                "${workspaceFolder}/../freertos_builds_LP_MSPM0G3507_release_ticlang"
             ],
             "cStandard": "c11"
         }
