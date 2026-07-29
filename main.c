@@ -15,4 +15,3 @@ void mainThread(void)
     /* 初始化机器人 */
     robotInit();
 }
- 

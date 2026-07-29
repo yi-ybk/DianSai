@@ -15,19 +15,6 @@ if (-not (Test-Path -LiteralPath $outputFile -PathType Leaf)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($JLinkExe)) {
-    $knownCandidates = @(
-        "D:\JLINK\JLink_V850\JLink.exe"
-    )
-
-    foreach ($candidate in $knownCandidates) {
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            $JLinkExe = $candidate
-            break
-        }
-    }
-}
-
-if ([string]::IsNullOrWhiteSpace($JLinkExe)) {
     $registryKeys = @(
         "HKLM:\SOFTWARE\SEGGER\J-Link",
         "HKLM:\SOFTWARE\WOW6432Node\SEGGER\J-Link",

@@ -48,18 +48,30 @@
                                     <listOptionValue value="${PROJECT_ROOT}/bsp/usart"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/algorithm"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/buzzer"/>
+<<<<<<< HEAD
                                     <listOptionValue value="${PROJECT_ROOT}/module/electromagnet"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/encoder"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/gray"/>
+=======
+                                    <listOptionValue value="${PROJECT_ROOT}/module/encoder"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/module/gray"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/module/track"/>
+>>>>>>> diansai/m0-master
                                     <listOptionValue value="${PROJECT_ROOT}/module/imu"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/key"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/led"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/motor"/>
+<<<<<<< HEAD
                                     <listOptionValue value="${PROJECT_ROOT}/module/nrf24l01"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/oled"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/pid"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/stepmotor"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/usart"/>
+=======
+                                    <listOptionValue value="${PROJECT_ROOT}/module/oled"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/module/pid"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/module/stepmotor"/>
+>>>>>>> diansai/m0-master
                                     <listOptionValue value="${PROJECT_ROOT}/module/wheel"/>
                                     <listOptionValue value="${PROJECT_ROOT}/module/zhangdatou_42"/>
                                     <listOptionValue value="${COM_TI_MSPM0_SDK_INSTALL_DIR}/source/third_party/CMSIS/Core/Include"/>
@@ -119,7 +131,11 @@
                         </toolChain>
                     </folderInfo>
                     <sourceEntries>
+<<<<<<< HEAD
                         <entry excluding="syscfg_c.rov.xs|freertos/ticlang|mspm0g3507.cmd|module/electromagnet/大功率MOS管驱动模块资料_V1.0" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>
+=======
+                        <entry excluding="syscfg_c.rov.xs|freertos/ticlang|mspm0g3507.cmd" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>
+>>>>>>> diansai/m0-master
                     </sourceEntries>
                 </configuration>
             </storageModule>

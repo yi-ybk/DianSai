@@ -180,7 +180,6 @@ void ChassisUpdate(Chassis_t *chassis, float dt_s)
 
     for (index = 0U; index < chassis->data.wheel_count; ++index)
         WheelUpdate(chassis->wheels[index], dt_s);
-
     chassis->data.update_count++;
     ChassisSyncData(chassis);
 }

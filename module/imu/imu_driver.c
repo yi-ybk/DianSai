@@ -451,6 +451,8 @@ void ImuMahonySolverUpdate(Imu_t *imu, void *context)
 {
     ImuMahonyConfig_t *config = (ImuMahonyConfig_t *)context;
     float accel_gravity_sign;
+    float roll, pitch, yaw;
+    float cr, sr, cp, sp, cy, sy;
 
     if ((imu == NULL) || (config == NULL))
         return;
@@ -477,10 +479,22 @@ void ImuMahonySolverUpdate(Imu_t *imu, void *context)
                               &imu->data.angle.x,
                               &imu->data.angle.y,
                               &imu->data.angle.z);
-    imu->data.quaternion.w = config->ahrs.quaternion[0];
-    imu->data.quaternion.x = config->ahrs.quaternion[1];
-    imu->data.quaternion.y = config->ahrs.quaternion[2];
-    imu->data.quaternion.z = config->ahrs.quaternion[3];
+
+    roll = config->ahrs.euler_rad[0];
+    pitch = config->ahrs.euler_rad[1];
+    yaw = config->ahrs.euler_rad[2];
+
+    cr = cosf(roll * 0.5f);
+    sr = sinf(roll * 0.5f);
+    cp = cosf(pitch * 0.5f);
+    sp = sinf(pitch * 0.5f);
+    cy = cosf(yaw * 0.5f);
+    sy = sinf(yaw * 0.5f);
+
+    imu->data.quaternion.w = cr * cp * cy + sr * sp * sy;
+    imu->data.quaternion.x = sr * cp * cy - cr * sp * sy;
+    imu->data.quaternion.y = cr * sp * cy + sr * cp * sy;
+    imu->data.quaternion.z = cr * cp * sy - sr * sp * cy;
 }
 
 void ImuProcess(Imu_t *imu)
