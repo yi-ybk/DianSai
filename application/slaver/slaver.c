@@ -28,6 +28,7 @@ static uint16_t SlaverFindHeader(const Slaver_t *slaver);
 static uint16_t SlaverHeaderPrefixLength(const Slaver_t *slaver);
 static void SlaverDropPrefix(Slaver_t *slaver, uint16_t length);
 static void SlaverCopyData(Slaver_t *slaver, SlaverData_t *data);
+static uint8_t SlaverSimpleFloatChecksum(const uint8_t *data, uint16_t length);
 
 /**
  * @brief   初始化从机串口通信对象
@@ -221,6 +222,125 @@ SlaverFrameState_t SlaverFrameLengthFromLengthField(const uint8_t *frame,
 
     *frame_length = (uint16_t)total_length;
     return (available >= *frame_length) ? SLAVER_FRAME_READY : SLAVER_FRAME_WAIT;
+}
+
+bool SlaverSimpleFloatProtocolInit(
+    SlaverSimpleFloatProtocol_t *protocol,
+    const SlaverSimpleFloatProtocolConfig_t *config)
+{
+    const uint16_t expected_frame_length =
+        (uint16_t)(1U + sizeof(float) + 1U + 1U);
+
+    if ((protocol == NULL) || (config == NULL) ||
+        (config->frame_length != expected_frame_length))
+    {
+        return false;
+    }
+
+    memset(protocol, 0, sizeof(*protocol));
+    protocol->config = *config;
+    return true;
+}
+
+SlaverFrameState_t SlaverSimpleFloatFrameLength(const uint8_t *frame,
+                                                uint16_t available,
+                                                uint16_t *frame_length,
+                                                void *context)
+{
+    const SlaverSimpleFloatProtocol_t *protocol =
+        (const SlaverSimpleFloatProtocol_t *)context;
+
+    if ((frame == NULL) || (frame_length == NULL) || (protocol == NULL))
+        return SLAVER_FRAME_INVALID;
+    if (available < protocol->config.frame_length)
+        return SLAVER_FRAME_WAIT;
+
+    *frame_length = protocol->config.frame_length;
+    return SLAVER_FRAME_READY;
+}
+
+bool SlaverSimpleFloatFrameValidate(const uint8_t *frame,
+                                    uint16_t frame_length,
+                                    void *context)
+{
+    const SlaverSimpleFloatProtocol_t *protocol =
+        (const SlaverSimpleFloatProtocol_t *)context;
+
+    if ((frame == NULL) || (protocol == NULL) ||
+        (frame_length != protocol->config.frame_length) ||
+        (frame[0] != protocol->config.frame_header) ||
+        (frame[frame_length - 1U] != protocol->config.frame_tail))
+    {
+        return false;
+    }
+
+    return frame[frame_length - 2U] ==
+           SlaverSimpleFloatChecksum(frame, frame_length - 2U);
+}
+
+void SlaverSimpleFloatFrameReceived(Slaver_t *slaver,
+                                    const uint8_t *frame,
+                                    uint16_t frame_length,
+                                    void *context)
+{
+    SlaverSimpleFloatProtocol_t *protocol = (SlaverSimpleFloatProtocol_t *)context;
+    uint32_t raw_value;
+    float value;
+
+    (void)slaver;
+    if ((frame == NULL) || (protocol == NULL) ||
+        (frame_length != protocol->config.frame_length))
+    {
+        return;
+    }
+
+    raw_value = (uint32_t)frame[1] |
+                ((uint32_t)frame[2] << 8U) |
+                ((uint32_t)frame[3] << 16U) |
+                ((uint32_t)frame[4] << 24U);
+    memcpy(&value, &raw_value, sizeof(value));
+
+    taskENTER_CRITICAL();
+    protocol->latest.value = value;
+    protocol->latest.update_count++;
+    protocol->latest.last_update_tick =
+        (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    protocol->latest.valid = true;
+    taskEXIT_CRITICAL();
+}
+
+bool SlaverSimpleFloatSend(Slaver_t *slaver,
+                           const SlaverSimpleFloatProtocol_t *protocol,
+                           float value)
+{
+    uint8_t frame[1U + sizeof(float) + 1U + 1U];
+    uint32_t raw_value;
+
+    if ((slaver == NULL) || (protocol == NULL) ||
+        (protocol->config.frame_length != sizeof(frame)))
+        return false;
+
+    memcpy(&raw_value, &value, sizeof(raw_value));
+    frame[0] = protocol->config.frame_header;
+    frame[1] = (uint8_t)raw_value;
+    frame[2] = (uint8_t)(raw_value >> 8U);
+    frame[3] = (uint8_t)(raw_value >> 16U);
+    frame[4] = (uint8_t)(raw_value >> 24U);
+    frame[sizeof(frame) - 2U] =
+        SlaverSimpleFloatChecksum(frame, sizeof(frame) - 2U);
+    frame[sizeof(frame) - 1U] = protocol->config.frame_tail;
+    return SlaverSend(slaver, frame, sizeof(frame));
+}
+
+void SlaverSimpleFloatGetLatest(const SlaverSimpleFloatProtocol_t *protocol,
+                                SlaverSimpleFloatData_t *data)
+{
+    if ((protocol == NULL) || (data == NULL))
+        return;
+
+    taskENTER_CRITICAL();
+    memcpy(data, &protocol->latest, sizeof(*data));
+    taskEXIT_CRITICAL();
 }
 
 /** @brief 绑定从机通信对象方法 */
@@ -498,4 +618,18 @@ static void SlaverCopyData(Slaver_t *slaver, SlaverData_t *data)
     taskENTER_CRITICAL();
     memcpy(data, &slaver->data, sizeof(*data));
     taskEXIT_CRITICAL();
+}
+
+/** @brief 计算数据的8位累加校验和 */
+static uint8_t SlaverSimpleFloatChecksum(const uint8_t *data, uint16_t length)
+{
+    uint16_t index;
+    uint8_t checksum = 0U;
+
+    if (data == NULL)
+        return 0U;
+
+    for (index = 0U; index < length; ++index)
+        checksum = (uint8_t)(checksum + data[index]);
+    return checksum;
 }

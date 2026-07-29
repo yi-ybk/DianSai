@@ -108,6 +108,33 @@ typedef struct
     uint32_t last_frame_tick;                  /**< 最近成功解析帧的时间戳 */
 } SlaverData_t;
 
+/** @brief 简单浮点协议配置 */
+typedef struct
+{
+    uint8_t frame_header;  /**< 帧头 */
+    uint8_t frame_tail;    /**< 帧尾 */
+    uint16_t frame_length; /**< 帧总长度；当前 float 协议固定为 7 字节 */
+} SlaverSimpleFloatProtocolConfig_t;
+
+/** @brief 简单浮点协议保存的最新数据 */
+typedef struct
+{
+    float value;                 /**< 最近一次校验通过的float数据 */
+    uint32_t update_count;       /**< 最近数据被更新的次数 */
+    uint32_t last_update_tick;   /**< 最近数据更新时间(ms) */
+    bool valid;                  /**< 是否已接收到至少一帧有效数据 */
+} SlaverSimpleFloatData_t;
+
+/**
+ * @brief 简单浮点协议上下文
+ * @details 固定帧格式为：帧头(1) + float小端序(4) + 累加校验和(1) + 帧尾(1)。
+ */
+typedef struct
+{
+    SlaverSimpleFloatProtocolConfig_t config; /**< 协议帧配置 */
+    SlaverSimpleFloatData_t latest;     /**< 仅保存最新的有效帧数据 */
+} SlaverSimpleFloatProtocol_t;
+
 /** @brief 从机串口通信对象 */
 struct Slaver
 {
@@ -144,6 +171,32 @@ SlaverFrameState_t SlaverFrameLengthFromLengthField(const uint8_t *frame,
                                                      uint16_t available,
                                                      uint16_t *frame_length,
                                                      void *context);
+
+/** @brief 初始化简单浮点协议上下文；当前协议帧长度必须配置为7字节 */
+bool SlaverSimpleFloatProtocolInit(
+    SlaverSimpleFloatProtocol_t *protocol,
+    const SlaverSimpleFloatProtocolConfig_t *config);
+/** @brief 简单浮点协议的固定帧长度回调 */
+SlaverFrameState_t SlaverSimpleFloatFrameLength(const uint8_t *frame,
+                                                uint16_t available,
+                                                uint16_t *frame_length,
+                                                void *context);
+/** @brief 简单浮点协议的帧校验回调 */
+bool SlaverSimpleFloatFrameValidate(const uint8_t *frame,
+                                    uint16_t frame_length,
+                                    void *context);
+/** @brief 简单浮点协议的接收回调，仅覆盖保存最新数据 */
+void SlaverSimpleFloatFrameReceived(Slaver_t *slaver,
+                                    const uint8_t *frame,
+                                    uint16_t frame_length,
+                                    void *context);
+/** @brief 按简单浮点协议发送一个float数据 */
+bool SlaverSimpleFloatSend(Slaver_t *slaver,
+                           const SlaverSimpleFloatProtocol_t *protocol,
+                           float value);
+/** @brief 获取简单浮点协议的最新数据快照 */
+void SlaverSimpleFloatGetLatest(const SlaverSimpleFloatProtocol_t *protocol,
+                                SlaverSimpleFloatData_t *data);
 
 #define SLAVER_OBJECT_DEFAULT             \
     .init     = SlaverInit,               \

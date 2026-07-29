@@ -19,16 +19,20 @@
 
 #include "imu_driver.h"
 #include "mg354pdh0_driver.h"
+#include "slaver.h"
 
 /************ 函数声明 **************/
 static void testTask(void *argument);
 static void oledTask(void *argument);
 static void imuParseTask(void *argument);
 static void trackTask(void *argument);
-
+static void blanceTask(void *argument);
+static void slaverFloatTask(void *argument);
+static bool slaverInit(void);
 static void key1ProcessEvents(void);
 static void oledDrawDefaultPage(void);
 static void oledDrawBallPage(void);
+
 static void trackInit(void);
 static void ledInit(void);
 static void oledInit(void);
@@ -80,6 +84,25 @@ const osThreadAttr_t trackTask_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
+
+osThreadId_t blanceTaskHandle;
+const osThreadAttr_t blanceTask_attributes = {
+  .name = "blanceTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+
+static StaticTask_t slaverFloatTaskControlBlock;
+static StackType_t slaverFloatTaskStack[256];
+osThreadId_t slaverFloatTaskHandle;
+const osThreadAttr_t slaverFloatTask_attributes = {
+  .name = "slaverFloatTask",
+  .cb_mem = &slaverFloatTaskControlBlock,
+  .cb_size = sizeof(slaverFloatTaskControlBlock),
+  .stack_mem = slaverFloatTaskStack,
+  .stack_size = sizeof(slaverFloatTaskStack),
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /*******************************/
 
 /*********** 对象实例 ***********/
@@ -112,6 +135,10 @@ TIM_HandleTypeDef htim_motor_pwm = {
 
 static UART_HandleTypeDef huart_imu0 = {
     .Instance = UART_IMU0_INST,
+};
+
+static UART_HandleTypeDef huart_slaver = {
+    .Instance = UART_SLAVER_INST,
 };
 
 Pid_t wheel_left_pid  = { PID_OBJECT_DEFAULT };
@@ -158,8 +185,16 @@ Imu_t imu0 = {
         },
 };
 
+Slaver_t slaver_float = { SLAVER_OBJECT_DEFAULT };
+SlaverSimpleFloatProtocol_t slaver_float_protocol;
+/*******************************/
+
+/**************全局参数***************/
 float ball_target = 0.0f;
 float ball_real   = 10.0f;
+
+float target_5cm  = 5.0f;
+float target_f5cm = -5.0f;
 
 volatile uint8_t mode = 2U;
 volatile uint32_t oled_refresh_error_count = 0U;
@@ -171,13 +206,12 @@ static bool key1_stable_pressed = false;
 static bool key1_long_press_handled = false;
 static uint32_t key1_sample_change_tick = 0U;
 static uint32_t key1_press_tick = 0U;
-/*******************************/
+/************************************/
 
 void robotInit(void)
 {
     /* 初始化机器人相关的硬件和软件组件 */
     ledInit();
-    //buzzerInit();
     oledInit();
     keyInit();
     grayInit();
@@ -187,24 +221,27 @@ void robotInit(void)
     pidInit();
     wheelInit();
     chassisInit();
-    testTaskHandle = osThreadNew(testTask, NULL, &testTask_attributes);
-    oledTaskHandle = osThreadNew(oledTask, NULL, &oledTask_attributes);
-    imu0TaskHandle = osThreadNew(imuParseTask, &imu0, &imu0Task_attributes);
-    trackTaskHandle = osThreadNew(trackTask, NULL, &trackTask_attributes);
+    testTaskHandle        = osThreadNew(testTask, NULL, &testTask_attributes);
+    oledTaskHandle        = osThreadNew(oledTask, NULL, &oledTask_attributes);
+    imu0TaskHandle        = osThreadNew(imuParseTask, &imu0, &imu0Task_attributes);
+    trackTaskHandle       = osThreadNew(trackTask, NULL, &trackTask_attributes);
+    blanceTaskHandle      = osThreadNew(blanceTask, NULL, &blanceTask_attributes);
+    slaverFloatTaskHandle = osThreadNew(slaverFloatTask, NULL,
+                                        &slaverFloatTask_attributes);
     configASSERT(testTaskHandle != NULL);
     configASSERT(oledTaskHandle != NULL);
     configASSERT(imu0TaskHandle != NULL);
     configASSERT(trackTaskHandle != NULL);
+    configASSERT(blanceTaskHandle != NULL);
+    configASSERT(slaverFloatTaskHandle != NULL);
 }
 
 static void testTask(void *argument)
 {
     (void)argument;
 
-    //chassis.set_velocity(&chassis, 0.03f, 0.00f);
     while (1)
     {
- 
         chassis.update(&chassis,0.005f);
         osDelay(5);
     }
@@ -324,6 +361,55 @@ static void imuParseTask(void *argument)
     }
 }
 
+static void slaverFloatTask(void *argument)
+{
+    (void)argument;
+
+    if (!slaverInit())
+    {
+        configASSERT(0);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    slaver_float.task(&slaver_float);
+}
+
+static bool slaverInit(void)
+{
+    const SlaverSimpleFloatProtocolConfig_t protocol_config = {
+        .frame_header = 0xA5U,
+        .frame_tail = 0x5AU,
+        .frame_length = 7U,
+    };
+    const SlaverInitConfig_t config = {
+        .uart_handle = &huart_slaver,
+        .dma_config = {
+            .dma = DMA,
+            .rx_channel = DMA_CH_SLAVER_RX_CHAN_ID,
+            .tx_channel = USART_DMA_CHANNEL_INVALID,
+        },
+        .uart_irqn = UART_SLAVER_INST_INT_IRQN,
+        .uart_irq_priority = 2U,
+        .dma_rx_buffer_size = 64U,
+        .header = { 0xA5U },
+        .header_length = 1U,
+        .frame_length_callback = SlaverSimpleFloatFrameLength,
+        .frame_validate_callback = SlaverSimpleFloatFrameValidate,
+        .frame_callback = SlaverSimpleFloatFrameReceived,
+        .protocol_context = &slaver_float_protocol,
+        .tx_timeout_ms = 100U,
+    };
+
+    if (!SlaverSimpleFloatProtocolInit(&slaver_float_protocol,
+                                       &protocol_config))
+    {
+        return false;
+    }
+
+    return slaver_float.init(&slaver_float, &config);
+}
+
 static void trackTask(void *argument)
 {
     (void)argument;
@@ -337,9 +423,27 @@ static void trackTask(void *argument)
     }
 }
 
+static void blanceTask(void *argument)
+{
+    (void)argument;
+
+    for (;;)
+    {
+        SlaverSimpleFloatData_t latest;
+        SlaverSimpleFloatGetLatest(&slaver_float_protocol, &latest);
+        ball_real = latest.value;
+        osDelay(5);
+    }
+}
+
 void UART_IMU0_INST_IRQHandler(void)
 {
     USARTIRQHandler(&huart_imu0);
+}
+
+void UART_SLAVER_INST_IRQHandler(void)
+{
+    USARTIRQHandler(&huart_slaver);
 }
 
 void MCAN_GIMBAL_INST_IRQHandler(void)
