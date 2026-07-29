@@ -162,13 +162,15 @@ float ball_target = 0.0f;
 float ball_real   = 10.0f;
 
 volatile uint8_t mode = 2U;
+volatile uint32_t oled_refresh_error_count = 0U;
+volatile uint32_t oled_recovery_count = 0U;
 
 static volatile bool ball_menu_active = false;
-static volatile bool key1_pressed = false;
-static volatile bool key1_long_press_handled = false;
-static volatile bool key1_release_pending = false;
-static volatile uint32_t key1_press_tick = 0U;
-static volatile uint32_t key1_release_tick = 0U;
+static bool key1_sample_pressed = false;
+static bool key1_stable_pressed = false;
+static bool key1_long_press_handled = false;
+static uint32_t key1_sample_change_tick = 0U;
+static uint32_t key1_press_tick = 0U;
 /*******************************/
 
 void robotInit(void)
@@ -212,8 +214,10 @@ static void oledTask(void *argument)
 {
     bool menu_active;
     bool refresh_ok;
+    uint32_t last_recovery_tick;
 
     (void)argument;
+    last_recovery_tick = HAL_GetTick();
 
     while (1)
     {
@@ -231,7 +235,22 @@ static void oledTask(void *argument)
             osDelay(5);
             refresh_ok = oled.refresh(&oled);
         }
-        if (refresh_ok && (!menu_active))
+
+        if (!refresh_ok)
+        {
+            oled_refresh_error_count++;
+            if (oled.recover(&oled))
+                oled_recovery_count++;
+            last_recovery_tick = HAL_GetTick();
+        }
+        else if ((HAL_GetTick() - last_recovery_tick) >= 5000U)
+        {
+            if (oled.recover(&oled))
+                oled_recovery_count++;
+            else
+                oled_refresh_error_count++;
+            last_recovery_tick = HAL_GetTick();
+        }
 
         osDelay(50);
     }
@@ -332,23 +351,7 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
 {
     (void)context;
 
-    if(key == &key1)
-    {
-        if (event == KEY_EVENT_PRESS)
-        {
-            key1_press_tick = HAL_GetTickFromISR();
-            key1_pressed = true;
-            key1_long_press_handled = false;
-            key1_release_pending = false;
-        }
-        else if ((event == KEY_EVENT_RELEASE) && key1_pressed)
-        {
-            key1_release_tick = HAL_GetTickFromISR();
-            key1_pressed = false;
-            key1_release_pending = true;
-        }
-    }
-    else if(key == &key2)
+    if(key == &key2)
     {
         if (event == KEY_EVENT_PRESS)
         {
@@ -360,32 +363,39 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
 static void key1ProcessEvents(void)
 {
     uint32_t now_tick = HAL_GetTick();
-    uint32_t press_duration = 0U;
+    bool sampled_pressed;
     bool toggle_menu = false;
     bool short_press = false;
 
-    taskENTER_CRITICAL();
-    if (key1_pressed && (!key1_long_press_handled) &&
+    sampled_pressed = (key1.read(&key1) == KEY_STATE_PRESSED);
+    if (sampled_pressed != key1_sample_pressed)
+    {
+        key1_sample_pressed = sampled_pressed;
+        key1_sample_change_tick = now_tick;
+    }
+
+    if ((key1_sample_pressed != key1_stable_pressed) &&
+        ((now_tick - key1_sample_change_tick) >= key1.init_config.debounce_ms))
+    {
+        key1_stable_pressed = key1_sample_pressed;
+        if (key1_stable_pressed)
+        {
+            key1_press_tick = now_tick;
+            key1_long_press_handled = false;
+        }
+        else if (!key1_long_press_handled)
+        {
+            key1_long_press_handled = true;
+            short_press = true;
+        }
+    }
+
+    if (key1_stable_pressed && (!key1_long_press_handled) &&
         ((now_tick - key1_press_tick) >= 2000U))
     {
         key1_long_press_handled = true;
         toggle_menu = true;
     }
-
-    if (key1_release_pending)
-    {
-        key1_release_pending = false;
-        press_duration = key1_release_tick - key1_press_tick;
-        if (!key1_long_press_handled)
-        {
-            key1_long_press_handled = true;
-            if (press_duration >= 2000U)
-                toggle_menu = true;
-            else
-                short_press = true;
-        }
-    }
-    taskEXIT_CRITICAL();
 
     if (toggle_menu)
     {
@@ -477,6 +487,10 @@ static void keyInit(void){
     };
     key1.init(&key1, &key1_config);
     key2.init(&key2, &key2_config);
+    key1_sample_pressed = (key1.read(&key1) == KEY_STATE_PRESSED);
+    key1_stable_pressed = key1_sample_pressed;
+    key1_sample_change_tick = HAL_GetTick();
+    key1_press_tick = key1_sample_change_tick;
 
     NVIC_ClearPendingIRQ(GPIO_MULTIPLE_GPIOA_INT_IRQN);
     NVIC_SetPriority(GPIO_MULTIPLE_GPIOA_INT_IRQN, 2U);

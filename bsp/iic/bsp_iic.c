@@ -18,6 +18,7 @@ static void IICSoftWriteSDA(const IICInstance *iic, GPIO_PinState state);
 static GPIO_PinState IICSoftReadSCL(const IICInstance *iic);
 static GPIO_PinState IICSoftReadSDA(const IICInstance *iic);
 static uint8_t IICSoftBusIsIdle(const IICInstance *iic);
+static uint8_t IICSoftRecoverBus(const IICInstance *iic);
 static void IICSoftStart(const IICInstance *iic);
 static void IICSoftStop(const IICInstance *iic);
 static void IICSoftWriteBit(const IICInstance *iic, uint8_t bit);
@@ -385,6 +386,23 @@ static uint8_t IICSoftBusIsIdle(const IICInstance *iic)
             (IICSoftReadSDA(iic) == GPIO_PIN_SET)) ? 1U : 0U;
 }
 
+static uint8_t IICSoftRecoverBus(const IICInstance *iic)
+{
+    IICSoftWriteSDA(iic, GPIO_PIN_SET);
+    for (uint8_t pulse = 0U; pulse < 9U; pulse++)
+    {
+        IICSoftWriteSCL(iic, GPIO_PIN_RESET);
+        IICSoftDelay(iic);
+        IICSoftWriteSCL(iic, GPIO_PIN_SET);
+        IICSoftDelay(iic);
+        if (IICSoftReadSCL(iic) != GPIO_PIN_SET)
+            return 0U;
+    }
+
+    IICSoftStop(iic);
+    return IICSoftBusIsIdle(iic);
+}
+
 static void IICSoftStart(const IICInstance *iic)
 {
     IICSoftWriteSDA(iic, GPIO_PIN_SET);
@@ -459,7 +477,7 @@ static uint8_t IICSoftTransmit(IICInstance *iic, const uint8_t *data, uint16_t s
     if ((iic == NULL) || (data == NULL) || (size == 0U))
         return 0U;
 
-    if (!IICSoftBusIsIdle(iic))
+    if ((!IICSoftBusIsIdle(iic)) && (!IICSoftRecoverBus(iic)))
         return 0U;
 
     IICSoftStart(iic);
