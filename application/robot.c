@@ -1,6 +1,7 @@
 #include "robot.h"
 #include "cmsis_os.h"
 #include "ti_msp_dl_config.h"
+#include "bsp_can.h"
 
 #include "led_driver.h"
 #include "buzzer_driver.h"
@@ -284,6 +285,11 @@ static void imuParseTask(void *argument)
 void UART_IMU0_INST_IRQHandler(void)
 {
     USARTIRQHandler(&huart_imu0);
+}
+
+void MCAN_GIMBAL_INST_IRQHandler(void)
+{
+    CANIRQHandler(MCAN_GIMBAL_INST, DL_MCAN_RX_FIFO_NUM_0);
 }
 
 void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)

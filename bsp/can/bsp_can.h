@@ -1,86 +1,91 @@
 /**
  * @file    bsp_can.h
- * @brief   CAN-FD设备底层驱动接口声明
- * @details 提供MSPM0 MCAN外设的注册、帧发送、轮询接收和回调服务接口。
+ * @brief   CAN设备底层驱动接口声明
+ * @details 参考原工程的逻辑实例接口，使用MSPM0 MCAN DriverLib实现经典CAN收发。
  */
 #pragma once
 
-#include "mspm0_hal_compat.h"
+#include <ti/driverlib/driverlib.h>
 #include <stdbool.h>
 #include <stdint.h>
 
-#define CAN_DEVICE_CNT 1U
-#define CAN_FRAME_DATA_MAX_LEN 64U
+#define CAN_MX_REGISTER_CNT 16U
+#define CAN_DEVICE_CNT CAN_MX_REGISTER_CNT
+#define CAN_CLASSIC_DATA_MAX_LEN 8U
 
-/**
- * @brief CAN数据帧结构体
- * @note  length支持经典CAN的0~8字节，以及CAN-FD的12、16、20、24、32、48、64字节
- */
-typedef struct
+/** @brief CAN帧类型 */
+typedef enum
 {
-    uint32_t id;                             // 标准帧为11位ID，扩展帧为29位ID
-    uint8_t length;                          // 有效数据字节数
-    bool is_extended;                        // true为29位扩展帧，false为11位标准帧
-    bool is_fd;                              // true为CAN-FD帧，false为经典CAN帧
-    bool bit_rate_switch;                    // CAN-FD数据段是否启用速率切换
-    uint8_t data[CAN_FRAME_DATA_MAX_LEN];    // 帧数据
-} CANFrame;
+    CAN_FRAME_STANDARD = 0,
+    CAN_FRAME_EXTENDED,
+} CANFrameType_t;
 
 typedef struct can_ins_temp CANInstance;
 typedef void (*can_module_callback)(CANInstance *);
 
 /**
- * @brief CAN实例结构体
- * @note  MCAN位时序、消息RAM、滤波器和中断由SysConfig负责配置
+ * @brief CAN逻辑实例
+ * @note  同一个MCAN外设可注册多个逻辑实例，每个实例独立保存收发ID和缓冲区。
  */
 struct can_ins_temp
 {
     MCAN_Regs *mcan;                    // MSPM0 MCAN外设寄存器基地址
-    uint32_t tx_buffer_index;           // 用于发送的专用Tx Buffer索引
-    uint32_t rx_fifo_number;            // 用于接收的Rx FIFO编号
-    CANFrame rx_frame;                  // 最近一次收到的数据帧
-    can_module_callback module_callback; // 接收服务回调函数
-    void *id;                           // 用户自定义ID，可用来保存额外的上下文
+    IRQn_Type irq_number;               // MCAN对应的NVIC中断号
+    uint32_t tx_buffer_index;           // SysConfig配置的专用Tx Buffer索引
+    uint32_t rx_fifo_number;            // SysConfig配置的Rx FIFO编号
+
+    uint32_t tx_id;                     // 当前发送帧ID
+    uint8_t tx_buff[CAN_CLASSIC_DATA_MAX_LEN];
+    uint8_t tx_len;                     // 当前发送帧有效字节数
+
+    uint32_t rx_id;                     // 期望接收的帧ID
+    uint32_t rx_id_mask;                // ID匹配掩码，置1的位参与比较
+    uint32_t rx_message_id;             // 最近一次收到的帧ID
+    uint8_t rx_buff[CAN_CLASSIC_DATA_MAX_LEN];
+    uint8_t rx_len;                     // 最近一次收到的有效字节数
+
+    CANFrameType_t tx_frame_type;
+    CANFrameType_t rx_frame_type;
+    can_module_callback module_callback;
+    void *id;                           // 用户自定义上下文
 };
 
-/**
- * @brief CAN设备初始化配置结构体
- */
+/** @brief CAN逻辑实例初始化配置 */
 typedef struct
 {
-    MCAN_Regs *mcan;                    // MSPM0 MCAN外设寄存器基地址
-    uint32_t tx_buffer_index;           // 用于发送的专用Tx Buffer索引，范围0~31
-    uint32_t rx_fifo_number;            // 接收FIFO，使用DL_MCAN_RX_FIFO_NUM_0或DL_MCAN_RX_FIFO_NUM_1
-    can_module_callback module_callback; // 接收服务回调函数
-    void *id;                           // 用户自定义ID
+    MCAN_Regs *mcan;
+    IRQn_Type irq_number;
+    uint32_t tx_buffer_index;
+    uint32_t rx_fifo_number;
+    uint32_t tx_id;
+    uint32_t rx_id;
+    uint32_t rx_id_mask;
+    CANFrameType_t tx_frame_type;
+    CANFrameType_t rx_frame_type;
+    can_module_callback module_callback;
+    void *id;
 } CAN_Init_Config_s;
 
-/**
- * @brief 注册一个CAN实例
- * @param config CAN初始化配置结构体指针
- * @return CANInstance* 成功返回实例指针，失败返回NULL
- */
+/** @brief 注册一个CAN逻辑实例，失败返回NULL */
 CANInstance *CANRegister(CAN_Init_Config_s *config);
 
-/**
- * @brief 发送一帧CAN或CAN-FD数据
- * @param can CAN实例指针
- * @param frame 待发送的数据帧
- * @return bool 发送请求已写入消息RAM返回true，参数非法或发送Buffer忙返回false
- */
-bool CANTransmit(CANInstance *can, const CANFrame *frame);
+/** @brief 设置实例下一帧的有效数据长度，范围0~8 */
+void CANSetDLC(CANInstance *can, uint8_t length);
+
+/** @brief 设置实例下一帧的发送ID */
+void CANSetTxId(CANInstance *can, uint32_t tx_id);
 
 /**
- * @brief 轮询接收一帧CAN或CAN-FD数据
- * @param can CAN实例指针
- * @param frame 接收数据帧输出缓冲区
- * @return bool 成功接收一帧返回true，接收FIFO为空或参数非法返回false
+ * @brief 使用实例的tx_id、tx_len和tx_buff发送一帧经典CAN数据
+ * @param timeout_ms 等待专用Tx Buffer空闲的超时时间，单位ms
  */
-bool CANReceive(CANInstance *can, CANFrame *frame);
+bool CANTransmit(CANInstance *can, float timeout_ms);
 
-/**
- * @brief 执行一次CAN接收服务并调用模块回调函数
- * @param can CAN实例指针
- * @note 在MCAN接收中断中或周期任务中调用此函数
- */
+/** @brief 等待实例的专用Tx Buffer完成发送 */
+bool CANWaitForTxComplete(CANInstance *can, float timeout_ms);
+
+/** @brief 读取接收FIFO，并向同一MCAN外设上的逻辑实例分发数据 */
 void CANService(CANInstance *can);
+
+/** @brief 在SysConfig生成的MCAN中断入口中调用 */
+void CANIRQHandler(MCAN_Regs *mcan, uint32_t rx_fifo_number);
