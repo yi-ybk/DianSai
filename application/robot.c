@@ -19,20 +19,19 @@
 
 #include "imu_driver.h"
 #include "mg354pdh0_driver.h"
-#include "slaver.h"
 
 /************ 函数声明 **************/
-static void testTask(void *argument);
+static void chassisControlTask(void *argument);
 static void oledTask(void *argument);
 static void imuParseTask(void *argument);
 static void trackTask(void *argument);
-static void blanceTask(void *argument);
-static void slaverFloatTask(void *argument);
-static bool slaverInit(void);
+
 static void key1ProcessEvents(void);
 static void oledDrawDefaultPage(void);
 static void oledDrawBallPage(void);
-
+static void trackStart(uint32_t start_tick);
+static void trackStop(uint32_t stop_tick);
+static float trackCalculateForwardSpeed(float remaining_distance_m);
 static void trackInit(void);
 static void ledInit(void);
 static void oledInit(void);
@@ -47,15 +46,15 @@ static void gpioInterruptDispatch(GPIO_TypeDef *GPIOx);
 /***********************************/
 
 /******** 线程句柄和属性 ********/
-static StaticTask_t testTaskControlBlock;
-static StackType_t testTaskStack[128];
-osThreadId_t testTaskHandle;
-const osThreadAttr_t testTask_attributes = {
-  .name = "testTask",
-  .cb_mem = &testTaskControlBlock,
-  .cb_size = sizeof(testTaskControlBlock),
-  .stack_mem = testTaskStack,
-  .stack_size = sizeof(testTaskStack),
+static StaticTask_t chassisControlTaskControlBlock;
+static StackType_t chassisControlTaskStack[128];
+osThreadId_t chassisControlTaskHandle;
+const osThreadAttr_t chassisControlTask_attributes = {
+  .name = "chassisControlTask",
+  .cb_mem = &chassisControlTaskControlBlock,
+  .cb_size = sizeof(chassisControlTaskControlBlock),
+  .stack_mem = chassisControlTaskStack,
+  .stack_size = sizeof(chassisControlTaskStack),
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
 
@@ -82,25 +81,6 @@ osThreadId_t trackTaskHandle;
 const osThreadAttr_t trackTask_attributes = {
   .name = "trackTask",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
-};
-
-osThreadId_t blanceTaskHandle;
-const osThreadAttr_t blanceTask_attributes = {
-  .name = "blanceTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
-};
-
-static StaticTask_t slaverFloatTaskControlBlock;
-static StackType_t slaverFloatTaskStack[256];
-osThreadId_t slaverFloatTaskHandle;
-const osThreadAttr_t slaverFloatTask_attributes = {
-  .name = "slaverFloatTask",
-  .cb_mem = &slaverFloatTaskControlBlock,
-  .cb_size = sizeof(slaverFloatTaskControlBlock),
-  .stack_mem = slaverFloatTaskStack,
-  .stack_size = sizeof(slaverFloatTaskStack),
   .priority = (osPriority_t) osPriorityNormal,
 };
 /*******************************/
@@ -135,10 +115,6 @@ TIM_HandleTypeDef htim_motor_pwm = {
 
 static UART_HandleTypeDef huart_imu0 = {
     .Instance = UART_IMU0_INST,
-};
-
-static UART_HandleTypeDef huart_slaver = {
-    .Instance = UART_SLAVER_INST,
 };
 
 Pid_t wheel_left_pid  = { PID_OBJECT_DEFAULT };
@@ -185,37 +161,40 @@ Imu_t imu0 = {
         },
 };
 
-Slaver_t slaver_float = { SLAVER_OBJECT_DEFAULT };
-SlaverSimpleFloatProtocol_t slaver_float_protocol;
-/*******************************/
-
-/**************全局参数***************/
 float ball_target = 0.0f;
 float ball_real   = 10.0f;
 
-float target_5cm  = 5.0f;
-float target_f5cm = -5.0f;
+#define ROBOT_MODE_TRACK                  2U
+#define TRACK_LAP_DISTANCE_M              (3.0f + 3.14159265f)
+#define TRACK_FINISH_ARM_DISTANCE_M       5.5f
+#define TRACK_POSITION_TOLERANCE_M        0.02f
+#define TRACK_POSITION_KP                 1.0f
+#define TRACK_FINISH_LINE_MIN_BLACK_COUNT 5U
+#define TRACK_MAX_RUN_TIME_MS             20000U
 
-volatile uint8_t mode = 2U;
+volatile uint8_t mode = ROBOT_MODE_TRACK;
 volatile uint32_t oled_refresh_error_count = 0U;
 volatile uint32_t oled_recovery_count = 0U;
 
 static volatile bool ball_menu_active = false;
-static volatile bool key1_irq_pressed = false;
-static volatile bool key1_oled_recovery_pending = false;
-static volatile uint32_t key1_irq_press_tick = 0U;
-static volatile uint32_t key1_irq_short_count = 0U;
-static volatile uint32_t key1_irq_long_count = 0U;
-static volatile uint32_t key1_irq_edge_tick = 0U;
-static uint32_t key1_handled_short_count = 0U;
-static uint32_t key1_handled_long_count = 0U;
-static uint32_t key1_last_action_tick = 0U;
-/************************************/
+static volatile bool track_running = false;
+static volatile bool track_start_requested = false;
+static volatile uint32_t track_start_request_tick = 0U;
+static volatile uint32_t track_start_tick = 0U;
+static volatile uint32_t track_elapsed_ms = 0U;
+static volatile uint32_t track_total_time_ms = 0U;
+static bool key1_sample_pressed = false;
+static bool key1_stable_pressed = false;
+static bool key1_long_press_handled = false;
+static uint32_t key1_sample_change_tick = 0U;
+static uint32_t key1_press_tick = 0U;
+/*******************************/
 
 void robotInit(void)
 {
     /* 初始化机器人相关的硬件和软件组件 */
     ledInit();
+    //buzzerInit();
     oledInit();
     keyInit();
     grayInit();
@@ -225,27 +204,24 @@ void robotInit(void)
     pidInit();
     wheelInit();
     chassisInit();
-    testTaskHandle        = osThreadNew(testTask, NULL, &testTask_attributes);
-    oledTaskHandle        = osThreadNew(oledTask, NULL, &oledTask_attributes);
-    imu0TaskHandle        = osThreadNew(imuParseTask, &imu0, &imu0Task_attributes);
-    trackTaskHandle       = osThreadNew(trackTask, NULL, &trackTask_attributes);
-    blanceTaskHandle      = osThreadNew(blanceTask, NULL, &blanceTask_attributes);
-    slaverFloatTaskHandle = osThreadNew(slaverFloatTask, NULL,
-                                        &slaverFloatTask_attributes);
-    configASSERT(testTaskHandle != NULL);
+    chassisControlTaskHandle = osThreadNew(chassisControlTask, NULL, &chassisControlTask_attributes);
+    oledTaskHandle = osThreadNew(oledTask, NULL, &oledTask_attributes);
+    imu0TaskHandle = osThreadNew(imuParseTask, &imu0, &imu0Task_attributes);
+    trackTaskHandle = osThreadNew(trackTask, NULL, &trackTask_attributes);
+    configASSERT(chassisControlTaskHandle != NULL);
     configASSERT(oledTaskHandle != NULL);
     configASSERT(imu0TaskHandle != NULL);
     configASSERT(trackTaskHandle != NULL);
-    configASSERT(blanceTaskHandle != NULL);
-    configASSERT(slaverFloatTaskHandle != NULL);
 }
 
-static void testTask(void *argument)
+static void chassisControlTask(void *argument)
 {
     (void)argument;
 
+    //chassis.set_velocity(&chassis, 0.03f, 0.00f);
     while (1)
     {
+ 
         chassis.update(&chassis,0.005f);
         osDelay(5);
     }
@@ -255,75 +231,73 @@ static void oledTask(void *argument)
 {
     bool menu_active;
     bool refresh_ok;
-    uint32_t last_refresh_tick;
+    uint32_t last_recovery_tick;
 
     (void)argument;
-    last_refresh_tick = HAL_GetTick() - 200U;
+    last_recovery_tick = HAL_GetTick();
 
     while (1)
     {
         key1ProcessEvents();
+        menu_active = ball_menu_active;
+        oled.fill(&oled, OLED_COLOR_BLACK);
+        if (menu_active)
+            oledDrawBallPage();
+        else
+            oledDrawDefaultPage();
 
-        if ((HAL_GetTick() - last_refresh_tick) >= 200U)
+        refresh_ok = oled.refresh(&oled);
+        if (!refresh_ok)
         {
-            menu_active = ball_menu_active;
-            oled.fill(&oled, OLED_COLOR_BLACK);
-            if (menu_active)
-                oledDrawBallPage();
-            else
-                oledDrawDefaultPage();
-
+            osDelay(5);
             refresh_ok = oled.refresh(&oled);
-            if (!refresh_ok)
-            {
-                osDelay(5);
-                refresh_ok = oled.refresh(&oled);
-            }
-
-            if (!refresh_ok)
-            {
-                oled_refresh_error_count++;
-                if (oled.recover(&oled))
-                    oled_recovery_count++;
-            }
-
-            last_refresh_tick = HAL_GetTick();
         }
 
-        osDelay(10);
+        if (!refresh_ok)
+        {
+            oled_refresh_error_count++;
+            if (oled.recover(&oled))
+                oled_recovery_count++;
+            last_recovery_tick = HAL_GetTick();
+        }
+        else if ((HAL_GetTick() - last_recovery_tick) >= 5000U)
+        {
+            if (oled.recover(&oled))
+                oled_recovery_count++;
+            else
+                oled_refresh_error_count++;
+            last_recovery_tick = HAL_GetTick();
+        }
+
+        osDelay(50);
     }
 }
 
 static void oledDrawDefaultPage(void)
 {
     ImuData_t imu_data;
-    uint32_t elapsed_ms;
-    uint32_t total_seconds;
-    uint32_t hours;
-    uint32_t minutes;
-    uint32_t seconds;
-    uint32_t tenths;
-    char time_text[] = "TIME 00:00:00.0";
+    uint32_t display_time_ms;
+    bool running;
 
     imu0.get_data(&imu0, &imu_data);
+    taskENTER_CRITICAL();
+    running = track_running;
+    display_time_ms = running ? track_elapsed_ms : track_total_time_ms;
+    taskEXIT_CRITICAL();
+
     oled.draw_string(&oled, 0, 0, "mode:", OLED_COLOR_WHITE);
     oled.draw_int(&oled, 5, 0, mode, OLED_COLOR_WHITE);
-
-    elapsed_ms = HAL_GetTick();
-    total_seconds = elapsed_ms / 1000U;
-    hours = (total_seconds / 3600U) % 100U;
-    minutes = (total_seconds / 60U) % 60U;
-    seconds = total_seconds % 60U;
-    tenths = (elapsed_ms / 100U) % 10U;
-
-    time_text[5]  = (char)('0' + (hours / 10U));
-    time_text[6]  = (char)('0' + (hours % 10U));
-    time_text[8]  = (char)('0' + (minutes / 10U));
-    time_text[9]  = (char)('0' + (minutes % 10U));
-    time_text[11] = (char)('0' + (seconds / 10U));
-    time_text[12] = (char)('0' + (seconds % 10U));
-    time_text[14] = (char)('0' + tenths);
-    oled.draw_string(&oled, 0, 1, time_text, OLED_COLOR_WHITE);
+    if (mode == ROBOT_MODE_TRACK)
+    {
+        oled.draw_string(&oled, 0, 2,
+                         running ? "track:RUN" : "track:STOP",
+                         OLED_COLOR_WHITE);
+        oled.draw_string(&oled, 0, 4, "time:", OLED_COLOR_WHITE);
+        oled.draw_float(&oled, 5, 4,
+                        (float)display_time_ms * 0.001f,
+                        2, OLED_COLOR_WHITE);
+        oled.draw_string(&oled, 11, 4, "s", OLED_COLOR_WHITE);
+    }
 }
 
 static void oledDrawBallPage(void)
@@ -385,89 +359,109 @@ static void imuParseTask(void *argument)
     }
 }
 
-static void slaverFloatTask(void *argument)
-{
-    (void)argument;
-
-    if (!slaverInit())
-    {
-        configASSERT(0);
-        vTaskDelete(NULL);
-        return;
-    }
-
-    slaver_float.task(&slaver_float);
-}
-
-static bool slaverInit(void)
-{
-    const SlaverSimpleFloatProtocolConfig_t protocol_config = {
-        .frame_header = 0xA5U,
-        .frame_tail = 0x5AU,
-        .frame_length = 7U,
-    };
-    const SlaverInitConfig_t config = {
-        .uart_handle = &huart_slaver,
-        .dma_config = {
-            .dma = DMA,
-            .rx_channel = DMA_CH_SLAVER_RX_CHAN_ID,
-            .tx_channel = USART_DMA_CHANNEL_INVALID,
-        },
-        .uart_irqn = UART_SLAVER_INST_INT_IRQN,
-        .uart_irq_priority = 2U,
-        .dma_rx_buffer_size = 64U,
-        .header = { 0xA5U },
-        .header_length = 1U,
-        .frame_length_callback = SlaverSimpleFloatFrameLength,
-        .frame_validate_callback = SlaverSimpleFloatFrameValidate,
-        .frame_callback = SlaverSimpleFloatFrameReceived,
-        .protocol_context = &slaver_float_protocol,
-        .tx_timeout_ms = 100U,
-    };
-
-    if (!SlaverSimpleFloatProtocolInit(&slaver_float_protocol,
-                                       &protocol_config))
-    {
-        return false;
-    }
-
-    return slaver_float.init(&slaver_float, &config);
-}
-
 static void trackTask(void *argument)
 {
+    ChassisData_t chassis_data;
+    uint32_t now_tick;
+    uint32_t requested_start_tick;
+    float distance_m;
+    float remaining_distance_m;
+    float forward_speed;
     (void)argument;
     float turn_speed;
+    bool start_requested;
+    bool finish_line_detected;
 
     for (;;)
     {
-        turn_speed = track.update(&track, 0.02f);
-        chassis.set_velocity(&chassis, 0.1, -turn_speed);
+        start_requested = false;
+        requested_start_tick = 0U;
+        if (mode == ROBOT_MODE_TRACK)
+        {
+            taskENTER_CRITICAL();
+            if (track_start_requested)
+            {
+                start_requested = true;
+                requested_start_tick = track_start_request_tick;
+                track_start_requested = false;
+            }
+            taskEXIT_CRITICAL();
+
+            if (start_requested && !track_running)
+                trackStart(requested_start_tick);
+        }
+
+        if ((mode == ROBOT_MODE_TRACK) && track_running)
+        {
+            now_tick = HAL_GetTick();
+            track_elapsed_ms = now_tick - track_start_tick;
+            turn_speed = track.update(&track, 0.02f);
+            chassis.get_data(&chassis, &chassis_data);
+            distance_m = (chassis_data.distance_m >= 0.0f) ?
+                         chassis_data.distance_m : -chassis_data.distance_m;
+            remaining_distance_m = TRACK_LAP_DISTANCE_M - distance_m;
+            finish_line_detected =
+                (distance_m >= TRACK_FINISH_ARM_DISTANCE_M) &&
+                (track.data.black_count >= TRACK_FINISH_LINE_MIN_BLACK_COUNT);
+
+            if (finish_line_detected ||
+                (remaining_distance_m <= TRACK_POSITION_TOLERANCE_M) ||
+                (track_elapsed_ms >= TRACK_MAX_RUN_TIME_MS))
+            {
+                trackStop(now_tick);
+            }
+            else
+            {
+                forward_speed =
+                    trackCalculateForwardSpeed(remaining_distance_m);
+                chassis.set_velocity(&chassis, forward_speed, -turn_speed);
+            }
+        }
+        else
+        {
+            chassis.set_velocity(&chassis, 0.0f, 0.0f);
+        }
         osDelay(20);
     }
 }
 
-static void blanceTask(void *argument)
+static void trackStart(uint32_t start_tick)
 {
-    (void)argument;
+    chassis.set_velocity(&chassis, 0.0f, 0.0f);
+    chassis.reset_odometry(&chassis);
+    track.pid.reset(&track.pid);
+    track_start_tick = start_tick;
+    track_elapsed_ms = 0U;
+    track_total_time_ms = 0U;
+    track_running = true;
+    led_red.on(&led_red);
+}
 
-    for (;;)
-    {
-        SlaverSimpleFloatData_t latest;
-        SlaverSimpleFloatGetLatest(&slaver_float_protocol, &latest);
-        ball_real = latest.value;
-        osDelay(5);
-    }
+static void trackStop(uint32_t stop_tick)
+{
+    chassis.set_velocity(&chassis, 0.0f, 0.0f);
+    track.pid.reset(&track.pid);
+    track_elapsed_ms = stop_tick - track_start_tick;
+    track_total_time_ms = track_elapsed_ms;
+    track_running = false;
+    led_red.off(&led_red);
+}
+
+static float trackCalculateForwardSpeed(float remaining_distance_m)
+{
+    float forward_speed = TRACK_POSITION_KP * remaining_distance_m;
+
+    if (forward_speed > track.init_config.base_speed)
+        forward_speed = track.init_config.base_speed;
+    if (forward_speed < 0.0f)
+        forward_speed = 0.0f;
+
+    return forward_speed;
 }
 
 void UART_IMU0_INST_IRQHandler(void)
 {
     USARTIRQHandler(&huart_imu0);
-}
-
-void UART_SLAVER_INST_IRQHandler(void)
-{
-    USARTIRQHandler(&huart_slaver);
 }
 
 void MCAN_GIMBAL_INST_IRQHandler(void)
@@ -479,28 +473,24 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
 {
     (void)context;
 
-    if (key == &key1)
+    if(key == &key2)
     {
         if (event == KEY_EVENT_PRESS)
         {
-            key1_irq_press_tick = key->data.last_event_tick;
-            key1_irq_pressed = true;
-        }
-        else if ((event == KEY_EVENT_RELEASE) && key1_irq_pressed)
-        {
-            if ((key->data.last_event_tick - key1_irq_press_tick) >= 2000U)
-                key1_irq_long_count++;
+            if (mode == ROBOT_MODE_TRACK)
+            {
+                if (!track_running && !track_start_requested)
+                {
+                    track_start_request_tick = HAL_GetTickFromISR();
+                    track_start_requested = true;
+                }
+            }
             else
-                key1_irq_short_count++;
-
-            key1_irq_pressed = false;
-        }
-    }
-    else if (key == &key2)
-    {
-        if (event == KEY_EVENT_PRESS)
-        {
-            led_red.toggle(&led_red);
+            {
+                track_start_requested = false;
+                track_running = false;
+                led_red.off(&led_red);
+            }
         }
     }
 }
@@ -508,61 +498,46 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
 static void key1ProcessEvents(void)
 {
     uint32_t now_tick = HAL_GetTick();
-    uint32_t short_count;
-    uint32_t long_count;
-    uint32_t edge_tick;
-    bool recover_oled = false;
-    bool toggle_menu;
-    bool short_press;
+    bool sampled_pressed;
+    bool toggle_menu = false;
+    bool short_press = false;
 
-    taskENTER_CRITICAL();
-    short_count = key1_irq_short_count;
-    long_count = key1_irq_long_count;
-    edge_tick = key1_irq_edge_tick;
-    if (key1_oled_recovery_pending &&
-        ((now_tick - edge_tick) >= 100U))
+    sampled_pressed = (key1.read(&key1) == KEY_STATE_PRESSED);
+    if (sampled_pressed != key1_sample_pressed)
     {
-        key1_oled_recovery_pending = false;
-        recover_oled = true;
-    }
-    taskEXIT_CRITICAL();
-
-    short_press = (short_count != key1_handled_short_count);
-    toggle_menu = (long_count != key1_handled_long_count);
-    key1_handled_short_count = short_count;
-    key1_handled_long_count = long_count;
-
-    /*
-     * PA18 的按键边沿可能在相邻 PA17（OLED SDA）上产生毛刺。等待机械
-     * 抖动结束后恢复 SSD1306 控制器状态，避免一次毛刺造成永久黑屏。
-     */
-    if (recover_oled)
-    {
-        if (oled.recover(&oled))
-            oled_recovery_count++;
-        else
-            oled_refresh_error_count++;
+        key1_sample_pressed = sampled_pressed;
+        key1_sample_change_tick = now_tick;
     }
 
-    /*
-     * 机械按键可能在一次完整按压过程中出现超过消抖时间的二次跳变。
-     * 对已经确认的动作增加锁定窗口，避免一次按键让 mode 连跳两次。
-     */
-    if ((toggle_menu || short_press) &&
-        ((now_tick - key1_last_action_tick) < 300U))
+    if ((key1_sample_pressed != key1_stable_pressed) &&
+        ((now_tick - key1_sample_change_tick) >= key1.init_config.debounce_ms))
     {
-        toggle_menu = false;
-        short_press = false;
+        key1_stable_pressed = key1_sample_pressed;
+        if (key1_stable_pressed)
+        {
+            key1_press_tick = now_tick;
+            key1_long_press_handled = false;
+        }
+        else if (!key1_long_press_handled)
+        {
+            key1_long_press_handled = true;
+            short_press = true;
+        }
+    }
+
+    if (key1_stable_pressed && (!key1_long_press_handled) &&
+        ((now_tick - key1_press_tick) >= 2000U))
+    {
+        key1_long_press_handled = true;
+        toggle_menu = true;
     }
 
     if (toggle_menu)
     {
-        key1_last_action_tick = now_tick;
         ball_menu_active = !ball_menu_active;
     }
     else if (short_press)
     {
-        key1_last_action_tick = now_tick;
         if (ball_menu_active)
         {
             ball_target = ball_real;
@@ -571,6 +546,14 @@ static void key1ProcessEvents(void)
         {
             mode = ((mode < 2U) || (mode >= 6U)) ?
                    2U : (uint8_t)(mode + 1U);
+            if (mode != ROBOT_MODE_TRACK)
+            {
+                track_start_requested = false;
+                if (track_running)
+                    trackStop(now_tick);
+                else
+                    led_red.off(&led_red);
+            }
         }
     }
 }
@@ -632,7 +615,7 @@ static void keyInit(void){
         .GPIO_Pin       = GPIO_PIN_18,
         .active_state   = GPIO_PIN_RESET,
         .exti_mode      = GPIO_EXTI_MODE_RISING_FALLING,
-        .debounce_ms    = 80U,
+        .debounce_ms    = 50U,
         .event_callback = keyEventCallback,
         .event_context  = NULL,
     };
@@ -647,10 +630,10 @@ static void keyInit(void){
     };
     key1.init(&key1, &key1_config);
     key2.init(&key2, &key2_config);
-    key1_last_action_tick = HAL_GetTick() - 300U;
-
-    DL_GPIO_clearInterruptStatus(GPIOA, GPIO_KEY_KEY_A18_PIN);
-    DL_GPIO_enableInterrupt(GPIOA, GPIO_KEY_KEY_A18_PIN);
+    key1_sample_pressed = (key1.read(&key1) == KEY_STATE_PRESSED);
+    key1_stable_pressed = key1_sample_pressed;
+    key1_sample_change_tick = HAL_GetTick();
+    key1_press_tick = key1_sample_change_tick;
 
     NVIC_ClearPendingIRQ(GPIO_MULTIPLE_GPIOA_INT_IRQN);
     NVIC_SetPriority(GPIO_MULTIPLE_GPIOA_INT_IRQN, 2U);
@@ -689,8 +672,6 @@ static void gpioInterruptDispatch(GPIO_TypeDef *GPIOx)
             switch (pending)
             {
                 case GPIO_KEY_KEY_A18_IIDX:
-                    key1_irq_edge_tick = HAL_GetTickFromISR();
-                    key1_oled_recovery_pending = true;
                     GPIOIRQHandler(GPIOx, GPIO_KEY_KEY_A18_PIN);
                     break;
                 case GPIO_ENCODER_ENCODER_RIGHT_A_A08_IIDX:
@@ -749,15 +730,15 @@ static void trackInit(void){
         .gray = &gray,
         .channel_count = 8U,
         .weights = { -3.5f, -2.5f, -1.5f, -0.5f, 0.5f, 1.5f, 2.5f, 3.5f },
-        .base_speed = 0.5f,
-        .max_turn_speed = 2.0f,
+        .base_speed = 0.4f,
+        .max_turn_speed = 0.8f,
         .pid_config = {
-            .kp = 0.3f,
+            .kp = 0.15f,
             .ki = 0.0f,
             .kd = 0.0f,
             .enable_output_limit = true,
-            .output_min = -2.0f,
-            .output_max = 2.0f,
+            .output_min = -0.8f,
+            .output_max = 0.8f,
             .enable_integral_limit = true,
             .integral_min = -1.0f,
             .integral_max = 1.0f,
