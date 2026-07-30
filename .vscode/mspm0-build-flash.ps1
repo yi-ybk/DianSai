@@ -1,9 +1,9 @@
 param(
     [ValidateSet("incremental", "full")]
     [string]$BuildType = "full",
-    [string]$CcsCli = "C:\TI\ccs2100\ccs\eclipse\ccs-server-cli.bat",
+    [string]$CcsCli = "",
     [string]$Workspace = "",
-    [string]$JLinkExe = "D:\JLINK\JLink_V850\JLink.exe",
+    [string]$JLinkExe = "",
     [ValidateRange(1, 50000)]
     [int]$SpeedKHz = 100,
     [switch]$FlashDryRun

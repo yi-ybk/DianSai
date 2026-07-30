@@ -50,9 +50,7 @@
                 "-ExecutionPolicy",
                 "Bypass",
                 "-File",
-                "${workspaceFolder}/.vscode/jlink-flash.ps1",
-                "-JLinkExe",
-                "D:/JLINK/JLink_V850/JLink.exe"
+                "${workspaceFolder}/.vscode/jlink-flash.ps1"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
@@ -71,10 +69,6 @@
                 "${workspaceFolder}/.vscode/mspm0-build-flash.ps1",
                 "-BuildType",
                 "full",
-                "-CcsCli",
-                "C:/TI/ccs2100/ccs/eclipse/ccs-server-cli.bat",
-                "-JLinkExe",
-                "D:/JLINK/JLink_V850/JLink.exe",
                 "-SpeedKHz",
                 "100"
             ],

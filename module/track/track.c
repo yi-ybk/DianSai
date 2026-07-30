@@ -28,9 +28,15 @@ float TrackCalculateError(Track_t *track)
 {
     uint32_t black_mask;
     uint8_t channel;
-    float error = 0.0f;
+    float run_error_sum = 0.0f;
+    float run_error;
+    float run_distance;
+    float best_run_distance = 0.0f;
+    float selected_error = 0.0f;
     float last_normalized_error;
-    uint8_t black_count = 0;
+    uint8_t run_black_count = 0U;
+    uint8_t selected_black_count = 0U;
+    bool run_selected = false;
 
     if ((track == NULL) || (!track->initialized) || (track->gray == NULL))
         return 0.0f;
@@ -39,21 +45,51 @@ float TrackCalculateError(Track_t *track)
     track->gray->update((Gray_t *)track->gray);
     black_mask = track->gray->get_black_mask((Gray_t *)track->gray);
 
-    for (channel = 0U; channel < track->init_config.channel_count; ++channel)
+    for (channel = 0U; channel <= track->init_config.channel_count; ++channel)
     {
-        if (black_mask & (1UL << channel))
+        if ((channel < track->init_config.channel_count) &&
+            (black_mask & (1UL << channel)))
         {
-            error += track->init_config.weights[channel];
-            black_count++;
+            run_error_sum += track->init_config.weights[channel];
+            run_black_count++;
+            continue;
+        }
+
+        if (run_black_count > 0U)
+        {
+            run_error = run_error_sum / (float)run_black_count;
+            run_distance = run_error - last_normalized_error;
+            if (run_distance < 0.0f)
+                run_distance = -run_distance;
+
+            if ((!run_selected) ||
+                (run_distance < best_run_distance) ||
+                ((run_distance == best_run_distance) &&
+                 (run_black_count > selected_black_count)))
+            {
+                selected_error = run_error;
+                selected_black_count = run_black_count;
+                best_run_distance = run_distance;
+                run_selected = true;
+            }
+
+            run_error_sum = 0.0f;
+            run_black_count = 0U;
         }
     }
 
     track->data.black_mask = black_mask;
-    track->data.black_count = black_count;
+    track->data.black_count = selected_black_count;
 
-    if (black_count > 0)
+    if (run_selected)
     {
-        track->data.normalized_error = error / (float)black_count;
+        /*
+         * A valid line produces one contiguous sensor run.  When reflections,
+         * track edges, or crossings produce separated runs, follow the run
+         * nearest to the previous line position instead of averaging unrelated
+         * black regions and jumping across the sensor array.
+         */
+        track->data.normalized_error = selected_error;
         if ((track->data.normalized_error > 0.1f) ||
             (track->data.normalized_error < -0.1f))
         {

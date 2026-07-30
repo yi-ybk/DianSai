@@ -74,6 +74,8 @@ $jlinkOutput = @(
         -device MSPM0G3507 `
         -if SWD `
         -speed $SpeedKHz `
+        -NoGui 1 `
+        -ExitOnError 1 `
         -autoconnect 1 2>&1
 )
 $exitCode = $LASTEXITCODE

@@ -1,15 +1,50 @@
 param(
     [ValidateSet("incremental", "full", "clean")]
     [string]$BuildType = "incremental",
-    [string]$CcsCli = "C:\TI\ccs2100\ccs\eclipse\ccs-server-cli.bat",
+    [string]$CcsCli = "",
     [string]$Workspace = ""
 )
 
 $ErrorActionPreference = "Stop"
 
+function Find-CcsCli {
+    $candidates = @()
+
+    if (-not [string]::IsNullOrWhiteSpace($env:CCS_ROOT)) {
+        $candidates += Join-Path $env:CCS_ROOT "ccs\eclipse\ccs-server-cli.bat"
+        $candidates += Join-Path $env:CCS_ROOT "eclipse\ccs-server-cli.bat"
+    }
+
+    $pathCommand = Get-Command "ccs-server-cli.bat" -ErrorAction SilentlyContinue
+    if ($null -ne $pathCommand) {
+        $candidates += $pathCommand.Source
+    }
+
+    foreach ($drive in Get-PSDrive -PSProvider FileSystem) {
+        foreach ($parent in @($drive.Root, (Join-Path $drive.Root "ti"))) {
+            if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+                continue
+            }
+
+            Get-ChildItem -LiteralPath $parent -Directory -Filter "ccs*" `
+                -ErrorAction SilentlyContinue | ForEach-Object {
+                $candidates += Join-Path $_.FullName `
+                    "ccs\eclipse\ccs-server-cli.bat"
+            }
+        }
+    }
+
+    return $candidates |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        Select-Object -First 1
+}
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($Workspace)) {
     $Workspace = Join-Path (Split-Path -Parent $projectRoot) ".ccs-cli-workspace-compile-check"
+}
+if ([string]::IsNullOrWhiteSpace($CcsCli)) {
+    $CcsCli = Find-CcsCli
 }
 
 $projectFile = Join-Path $projectRoot ".project"

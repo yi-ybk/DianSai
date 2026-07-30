@@ -38,6 +38,7 @@ static void trackStart(uint32_t start_tick);
 static void trackStop(uint32_t stop_tick);
 static float trackCalculateForwardSpeed(float remaining_distance_m);
 static float trackLimitForwardSpeed(float requested_speed_mps);
+static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s);
 static void trackInit(void);
 static void ledInit(void);
 static void oledInit(void);
@@ -177,7 +178,7 @@ float ball_real   = 10.0f;
 #define TRACK_POSITION_TOLERANCE_M        0.02f
 #define TRACK_POSITION_KP                 1.0f
 #define TRACK_FINISH_LINE_MIN_BLACK_COUNT 5U
-#define TRACK_MAX_RUN_TIME_MS             45000U
+#define TRACK_MAX_RUN_TIME_MS             20000U
 #define REQUIREMENT4_AB_DISTANCE_M        1.5f
 #define REQUIREMENT4_FORWARD_SPEED_MPS    0.4f
 #define REQUIREMENT4_MAX_RUN_TIME_MS      8000U
@@ -187,7 +188,9 @@ float ball_real   = 10.0f;
 #define TRACK_TELEMETRY_CAPACITY           1600U
 #define TRACK_TELEMETRY_PERIOD_MS          10U
 #define TRACK_TELEMETRY_START_DELAY_MS     4000U
-#define TRACK_CORNER_EXIT_HOLD_MS          400U
+#define TRACK_CORNER_EXIT_HOLD_MS          300U
+#define TRACK_FORWARD_ACCEL_MPS2           1.10f
+#define TRACK_FORWARD_DECEL_MPS2           2.00f
 /*
 TRACK_LAP_DISTANCE_M：跑一圈的目标距离，当前约 6.1416m。
 TRACK_FINISH_ARM_DISTANCE_M：行驶超过 5.5m 后，才允许识别 A 点终点黑线，避免刚启动就误判。
@@ -229,6 +232,7 @@ static volatile uint32_t track_start_tick = 0U;
 static volatile uint32_t track_elapsed_ms = 0U;
 static volatile uint32_t track_total_time_ms = 0U;
 static uint32_t track_slow_until_tick = 0U;
+static float track_forward_speed_command = 0.0f;
 static bool key1_sample_pressed = false;
 static bool key1_stable_pressed = false;
 static bool key1_long_press_handled = false;
@@ -507,6 +511,7 @@ static void trackRunRequirement2(uint32_t now_tick, float dt_s)
     {
         forward_speed = trackCalculateForwardSpeed(remaining_distance_m);
         forward_speed = trackLimitForwardSpeed(forward_speed);
+        forward_speed = trackSmoothForwardSpeed(forward_speed, dt_s);
         chassis.set_velocity(&chassis, forward_speed, -turn_speed);
         trackCaptureTelemetry(now_tick);
     }
@@ -530,10 +535,12 @@ static void trackRunRequirement4(uint32_t now_tick, float dt_s)
     }
     else
     {
-        chassis.set_velocity(&chassis,
-                             trackLimitForwardSpeed(
-                                 REQUIREMENT4_FORWARD_SPEED_MPS),
-                             -turn_speed);
+        chassis.set_velocity(
+            &chassis,
+            trackSmoothForwardSpeed(
+                trackLimitForwardSpeed(REQUIREMENT4_FORWARD_SPEED_MPS),
+                dt_s),
+            -turn_speed);
         trackCaptureTelemetry(now_tick);
     }
 }
@@ -576,6 +583,7 @@ static void trackStart(uint32_t start_tick)
     track_elapsed_ms = 0U;
     track_total_time_ms = 0U;
     track_slow_until_tick = start_tick;
+    track_forward_speed_command = 0.0f;
     track_telemetry_write_count = 0U;
     track_telemetry_last_tick =
         start_tick + TRACK_TELEMETRY_START_DELAY_MS -
@@ -589,6 +597,7 @@ static void trackStop(uint32_t stop_tick)
     chassis.set_velocity(&chassis, 0.0f, 0.0f);
     trackCaptureTelemetry(stop_tick);
     track.pid.reset(&track.pid);
+    track_forward_speed_command = 0.0f;
     track_elapsed_ms = stop_tick - track_start_tick;
     track_total_time_ms = track_elapsed_ms;
     track_running = false;
@@ -620,27 +629,51 @@ static float trackLimitForwardSpeed(float requested_speed_mps)
     if (absolute_error < 0.0f)
         absolute_error = -absolute_error;
 
-    if (outer_sensor_only || (absolute_error >= 3.0f))
+    if (outer_sensor_only || (absolute_error >= 1.5f))
         track_slow_until_tick = now_tick + TRACK_CORNER_EXIT_HOLD_MS;
 
     if (track.data.black_count == 0U)
-        speed_scale = 0.35f;
+        speed_scale = 0.07f;
     else if (outer_sensor_only)
-        speed_scale = 0.50f;
+        speed_scale = 0.28f;
     else if (absolute_error >= 3.0f)
-        speed_scale = 0.55f;
+        speed_scale = 0.47f;
     else if (absolute_error >= 2.0f)
-        speed_scale = 0.70f;
+        speed_scale = 0.47f;
     else if (absolute_error >= 1.0f)
-        speed_scale = 0.85f;
+        speed_scale = 0.65f;
 
     if (((int32_t)(track_slow_until_tick - now_tick) > 0) &&
-        (speed_scale > 0.65f))
+        (speed_scale > 0.47f))
     {
-        speed_scale = 0.65f;
+        speed_scale = 0.47f;
     }
 
     return requested_speed_mps * speed_scale;
+}
+
+static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s)
+{
+    float maximum_step;
+
+    if (dt_s <= 0.0f)
+        dt_s = TRACK_CONTROL_DT_S;
+
+    if (target_speed_mps > track_forward_speed_command)
+    {
+        maximum_step = TRACK_FORWARD_ACCEL_MPS2 * dt_s;
+        if ((target_speed_mps - track_forward_speed_command) > maximum_step)
+            target_speed_mps = track_forward_speed_command + maximum_step;
+    }
+    else
+    {
+        maximum_step = TRACK_FORWARD_DECEL_MPS2 * dt_s;
+        if ((track_forward_speed_command - target_speed_mps) > maximum_step)
+            target_speed_mps = track_forward_speed_command - maximum_step;
+    }
+
+    track_forward_speed_command = target_speed_mps;
+    return track_forward_speed_command;
 }
 
 void UART_IMU0_INST_IRQHandler(void)
@@ -739,8 +772,9 @@ static void key1ProcessEvents(void)
         }
         else
         {
-            mode = ((mode < 2U) || (mode >= 6U)) ?
-                   2U : (uint8_t)(mode + 1U);
+            mode = (mode == ROBOT_MODE_REQUIREMENT_2) ?
+                   ROBOT_MODE_REQUIREMENT_4 :
+                   ROBOT_MODE_REQUIREMENT_2;
             if (!trackModeIsSupported(mode))
             {
                 track_start_requested = false;
@@ -929,15 +963,15 @@ static void trackInit(void){
         .gray = &gray,
         .channel_count = 8U,
         .weights = { -3.5f, -2.5f, -1.5f, -0.5f, 0.5f, 1.5f, 2.5f, 3.5f },
-        .base_speed = 0.2f,
-        .max_turn_speed = 1.2f,
+        .base_speed = 0.65f,
+        .max_turn_speed = 0.85f,
         .pid_config = {
-            .kp = 0.28f,
+            .kp = 0.235f,
             .ki = 0.0f,
-            .kd = 0.002f,
+            .kd = 0.0015f,
             .enable_output_limit = true,
-            .output_min = -1.2f,
-            .output_max = 1.2f,
+            .output_min = -0.85f,
+            .output_max = 0.85f,
             .enable_integral_limit = true,
             .integral_min = -1.0f,
             .integral_max = 1.0f,

@@ -2,24 +2,16 @@
 
 ## 本机工具路径
 
-```text
-CCS CLI:
-C:\TI\ccs2100\ccs\eclipse\ccs-server-cli.bat
+CCS CLI 默认从 `CCS_ROOT`、`PATH` 和各本地磁盘的常见 `ccs*`
+安装目录自动发现，也可以通过 `-CcsCli` 显式指定。
 
-TI Arm Clang:
-C:\TI\ccs2100\ccs\tools\compiler\ti-cgt-armllvm_5.1.1.LTS\bin\tiarmclang.exe
-
-MSPM0 SDK:
-C:\TI\mspm0_sdk_2_11_00_07
-
-J-Link Commander:
-D:\JLINK\JLink_V850\JLink.exe
-```
+J-Link Commander 默认从 SEGGER 注册表安装目录自动发现，也可以通过
+`-JLinkExe` 显式指定。
 
 CCS 命令行使用工程同级的独立工作区：
 
 ```text
-D:\DianSai\m0\m0\.ccs-cli-workspace-compile-check
+<工程父目录>\.ccs-cli-workspace-compile-check
 ```
 
 它不会和 CCS 图形界面的工作区互相占用，也不会写入工程源码目录。
