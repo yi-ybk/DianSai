@@ -20,7 +20,6 @@ const GPIO3  = GPIO.addInstance();
 const GPIO4  = GPIO.addInstance();
 const GPIO5  = GPIO.addInstance();
 const GPIO6  = GPIO.addInstance();
-const GPIO7  = GPIO.addInstance();
 const GPIO8  = GPIO.addInstance();
 const GPIO9  = GPIO.addInstance();
 const MCAN   = scripting.addModule("/ti/driverlib/MCAN", {}, false);
@@ -76,7 +75,7 @@ GPIO2.associatedPins[7].direction   = "INPUT";
 GPIO2.associatedPins[7].pin.$assign = "PA25";
 
 GPIO3.$name                                 = "GPIO_KEY";
-GPIO3.associatedPins.create(2);
+GPIO3.associatedPins.create(3);
 GPIO3.associatedPins[0].$name               = "KEY_A18";
 GPIO3.associatedPins[0].direction           = "INPUT";
 GPIO3.associatedPins[0].internalResistor    = "PULL_UP";
@@ -94,6 +93,15 @@ GPIO3.associatedPins[1].assignedPort        = "PORTB";
 GPIO3.associatedPins[1].assignedPortSegment = "Lower";
 GPIO3.associatedPins[1].interruptEn         = true;
 GPIO3.associatedPins[1].polarity            = "RISE_FALL";
+GPIO3.associatedPins[2].$name               = "KEY_A07";
+GPIO3.associatedPins[2].direction           = "INPUT";
+GPIO3.associatedPins[2].internalResistor    = "PULL_UP";
+GPIO3.associatedPins[2].interruptEn         = true;
+GPIO3.associatedPins[2].assignedPort        = "PORTA";
+GPIO3.associatedPins[2].assignedPortSegment = "Lower";
+GPIO3.associatedPins[2].assignedPin         = "7";
+GPIO3.associatedPins[2].polarity            = "FALL";
+GPIO3.associatedPins[2].pin.$assign         = "PA7";
 
 GPIO4.$name                              = "GPIO_OLED";
 GPIO4.associatedPins.create(2);
@@ -161,11 +169,6 @@ GPIO6.associatedPins[3].assignedPortSegment = "Lower";
 GPIO6.associatedPins[3].assignedPin         = "9";
 GPIO6.associatedPins[3].polarity            = "RISE_FALL";
 GPIO6.associatedPins[3].pin.$assign         = "PA9";
-
-GPIO7.$name                              = "GPIO_BUZZER";
-GPIO7.associatedPins[0].$name            = "BUZZER_A30";
-GPIO7.associatedPins[0].initialValue     = "CLEARED";
-GPIO7.associatedPins[0].pin.$assign      = "PA30";
 
 GPIO8.$name                          = "GPIO_NRF24";
 GPIO8.associatedPins.create(3);

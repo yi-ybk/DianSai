@@ -27,11 +27,17 @@ static void imuParseTask(void *argument);
 static void trackTask(void *argument);
 
 static void key1ProcessEvents(void);
+static void keyA07HandleInterrupt(void);
 static void oledDrawDefaultPage(void);
 static void oledDrawBallPage(void);
+static bool trackModeIsSupported(uint8_t selected_mode);
+static void trackRunRequirement2(uint32_t now_tick, float dt_s);
+static void trackRunRequirement4(uint32_t now_tick, float dt_s);
+static void trackCaptureTelemetry(uint32_t now_tick);
 static void trackStart(uint32_t start_tick);
 static void trackStop(uint32_t stop_tick);
 static float trackCalculateForwardSpeed(float remaining_distance_m);
+static float trackLimitForwardSpeed(float requested_speed_mps);
 static void trackInit(void);
 static void ledInit(void);
 static void oledInit(void);
@@ -67,21 +73,21 @@ const osThreadAttr_t oledTask_attributes = {
   .cb_size = sizeof(oledTaskControlBlock),
   .stack_mem = oledTaskStack,
   .stack_size = sizeof(oledTaskStack),
-  .priority = (osPriority_t) osPriorityAboveNormal,
+  .priority = (osPriority_t) osPriorityLow,
 };
 
 osThreadId_t imu0TaskHandle;
 const osThreadAttr_t imu0Task_attributes = {
   .name = "imu0Task",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityAboveNormal,
+  .priority = (osPriority_t) osPriorityNormal,
 };
 
 osThreadId_t trackTaskHandle;
 const osThreadAttr_t trackTask_attributes = {
   .name = "trackTask",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityHigh,
 };
 /*******************************/
 
@@ -164,17 +170,56 @@ Imu_t imu0 = {
 float ball_target = 0.0f;
 float ball_real   = 10.0f;
 
-#define ROBOT_MODE_TRACK                  2U
+#define ROBOT_MODE_REQUIREMENT_2          2U
+#define ROBOT_MODE_REQUIREMENT_4          4U
 #define TRACK_LAP_DISTANCE_M              (3.0f + 3.14159265f)
 #define TRACK_FINISH_ARM_DISTANCE_M       5.5f
 #define TRACK_POSITION_TOLERANCE_M        0.02f
 #define TRACK_POSITION_KP                 1.0f
 #define TRACK_FINISH_LINE_MIN_BLACK_COUNT 5U
-#define TRACK_MAX_RUN_TIME_MS             20000U
-
-volatile uint8_t mode = ROBOT_MODE_TRACK;
+#define TRACK_MAX_RUN_TIME_MS             45000U
+#define REQUIREMENT4_AB_DISTANCE_M        1.5f
+#define REQUIREMENT4_FORWARD_SPEED_MPS    0.4f
+#define REQUIREMENT4_MAX_RUN_TIME_MS      8000U
+#define KEY_A07_DEBOUNCE_MS               50U
+#define OLED_COUNTER_INTERVAL_MS           1000U
+#define TRACK_CONTROL_DT_S                 0.005f
+#define TRACK_TELEMETRY_CAPACITY           1600U
+#define TRACK_TELEMETRY_PERIOD_MS          10U
+#define TRACK_TELEMETRY_START_DELAY_MS     4000U
+#define TRACK_CORNER_EXIT_HOLD_MS          400U
+/*
+TRACK_LAP_DISTANCE_M：跑一圈的目标距离，当前约 6.1416m。
+TRACK_FINISH_ARM_DISTANCE_M：行驶超过 5.5m 后，才允许识别 A 点终点黑线，避免刚启动就误判。
+TRACK_POSITION_TOLERANCE_M：停车位置允许误差，当前 0.02m，即题目要求的 2cm。
+TRACK_POSITION_KP：位置环 P 参数。增大后接近终点时速度更高，但容易冲过；减小后减速更早、更平稳。
+TRACK_FINISH_LINE_MIN_BLACK_COUNT：至少多少路灰度传感器检测到黑色，才认为到达终点线。
+TRACK_MAX_RUN_TIME_MS：最长运行时间，当前 20000ms。
+REQUIREMENT4_AB_DISTANCE_M：要求 4 从 A 到 B 的目标里程，当前 1.5m。
+REQUIREMENT4_FORWARD_SPEED_MPS：要求 4 的巡线前进速度，当前 0.4m/s。
+REQUIREMENT4_MAX_RUN_TIME_MS：要求 4 的 AB 最大运行时间，当前 8000ms。
+*/
+volatile uint8_t mode = ROBOT_MODE_REQUIREMENT_2;
 volatile uint32_t oled_refresh_error_count = 0U;
 volatile uint32_t oled_recovery_count = 0U;
+volatile uint32_t imu0_init_error = 0U;
+static uint32_t oled_default_counter = 0U;
+
+typedef struct
+{
+    uint8_t black_mask;
+    int8_t error_x10;
+    int8_t turn_x100;
+    uint8_t black_count;
+    int16_t left_speed_x1000;
+    int16_t right_speed_x1000;
+    int16_t distance_mm;
+} TrackTelemetrySample_t;
+
+volatile TrackTelemetrySample_t
+    track_telemetry[TRACK_TELEMETRY_CAPACITY];
+volatile uint32_t track_telemetry_write_count = 0U;
+volatile uint32_t track_telemetry_last_tick = 0U;
 
 static volatile bool ball_menu_active = false;
 static volatile bool track_running = false;
@@ -183,18 +228,19 @@ static volatile uint32_t track_start_request_tick = 0U;
 static volatile uint32_t track_start_tick = 0U;
 static volatile uint32_t track_elapsed_ms = 0U;
 static volatile uint32_t track_total_time_ms = 0U;
+static uint32_t track_slow_until_tick = 0U;
 static bool key1_sample_pressed = false;
 static bool key1_stable_pressed = false;
 static bool key1_long_press_handled = false;
 static uint32_t key1_sample_change_tick = 0U;
 static uint32_t key1_press_tick = 0U;
+static volatile uint32_t key_a07_last_toggle_tick = 0U;
 /*******************************/
 
 void robotInit(void)
 {
     /* 初始化机器人相关的硬件和软件组件 */
     ledInit();
-    //buzzerInit();
     oledInit();
     keyInit();
     grayInit();
@@ -231,14 +277,21 @@ static void oledTask(void *argument)
 {
     bool menu_active;
     bool refresh_ok;
-    uint32_t last_recovery_tick;
+    uint32_t last_counter_tick;
+    uint32_t now_tick;
 
     (void)argument;
-    last_recovery_tick = HAL_GetTick();
+    last_counter_tick = HAL_GetTick();
 
     while (1)
     {
         key1ProcessEvents();
+        now_tick = HAL_GetTick();
+        if ((now_tick - last_counter_tick) >= OLED_COUNTER_INTERVAL_MS)
+        {
+            oled_default_counter++;
+            last_counter_tick = now_tick;
+        }
         menu_active = ball_menu_active;
         oled.fill(&oled, OLED_COLOR_BLACK);
         if (menu_active)
@@ -258,15 +311,6 @@ static void oledTask(void *argument)
             oled_refresh_error_count++;
             if (oled.recover(&oled))
                 oled_recovery_count++;
-            last_recovery_tick = HAL_GetTick();
-        }
-        else if ((HAL_GetTick() - last_recovery_tick) >= 5000U)
-        {
-            if (oled.recover(&oled))
-                oled_recovery_count++;
-            else
-                oled_refresh_error_count++;
-            last_recovery_tick = HAL_GetTick();
         }
 
         osDelay(50);
@@ -287,17 +331,25 @@ static void oledDrawDefaultPage(void)
 
     oled.draw_string(&oled, 0, 0, "mode:", OLED_COLOR_WHITE);
     oled.draw_int(&oled, 5, 0, mode, OLED_COLOR_WHITE);
-    if (mode == ROBOT_MODE_TRACK)
+    if (trackModeIsSupported(mode))
     {
-        oled.draw_string(&oled, 0, 2,
-                         running ? "track:RUN" : "track:STOP",
-                         OLED_COLOR_WHITE);
+        if (mode == ROBOT_MODE_REQUIREMENT_4)
+            oled.draw_string(&oled, 0, 2,
+                             running ? "R4:RUN" : "R4:STOP",
+                             OLED_COLOR_WHITE);
+        else
+            oled.draw_string(&oled, 0, 2,
+                             running ? "R2:RUN" : "R2:STOP",
+                             OLED_COLOR_WHITE);
         oled.draw_string(&oled, 0, 4, "time:", OLED_COLOR_WHITE);
         oled.draw_float(&oled, 5, 4,
                         (float)display_time_ms * 0.001f,
                         2, OLED_COLOR_WHITE);
         oled.draw_string(&oled, 11, 4, "s", OLED_COLOR_WHITE);
     }
+    oled.draw_string(&oled, 0, 6, "count:", OLED_COLOR_WHITE);
+    oled.draw_int(&oled, 6, 6, (int32_t)oled_default_counter,
+                  OLED_COLOR_WHITE);
 }
 
 static void oledDrawBallPage(void)
@@ -329,21 +381,21 @@ static void imuParseTask(void *argument)
 
     if (imu == NULL)
     {
-        configASSERT(0);
+        imu0_init_error = 1U;
         vTaskDelete(NULL);
         return;
     }
 
     if ((imu->init == NULL) || !imu->init(imu, &imu->init_config))
     {
-        configASSERT(0);
+        imu0_init_error = 2U;
         vTaskDelete(NULL);
         return;
     }
     if (!USARTConfigureDMA(imu->usart, &dma_config) ||
         !USARTStartReceiveDMA(imu->usart))
     {
-        configASSERT(0);
+        imu0_init_error = 3U;
         vTaskDelete(NULL);
         return;
     }
@@ -361,22 +413,18 @@ static void imuParseTask(void *argument)
 
 static void trackTask(void *argument)
 {
-    ChassisData_t chassis_data;
     uint32_t now_tick;
     uint32_t requested_start_tick;
-    float distance_m;
-    float remaining_distance_m;
-    float forward_speed;
+    uint32_t last_control_tick = 0U;
+    float control_dt_s;
     (void)argument;
-    float turn_speed;
     bool start_requested;
-    bool finish_line_detected;
 
     for (;;)
     {
         start_requested = false;
         requested_start_tick = 0U;
-        if (mode == ROBOT_MODE_TRACK)
+        if (trackModeIsSupported(mode))
         {
             taskENTER_CRITICAL();
             if (track_start_requested)
@@ -391,38 +439,132 @@ static void trackTask(void *argument)
                 trackStart(requested_start_tick);
         }
 
-        if ((mode == ROBOT_MODE_TRACK) && track_running)
+        if (track_running)
         {
             now_tick = HAL_GetTick();
             track_elapsed_ms = now_tick - track_start_tick;
-            turn_speed = track.update(&track, 0.02f);
-            chassis.get_data(&chassis, &chassis_data);
-            distance_m = (chassis_data.distance_m >= 0.0f) ?
-                         chassis_data.distance_m : -chassis_data.distance_m;
-            remaining_distance_m = TRACK_LAP_DISTANCE_M - distance_m;
-            finish_line_detected =
-                (distance_m >= TRACK_FINISH_ARM_DISTANCE_M) &&
-                (track.data.black_count >= TRACK_FINISH_LINE_MIN_BLACK_COUNT);
-
-            if (finish_line_detected ||
-                (remaining_distance_m <= TRACK_POSITION_TOLERANCE_M) ||
-                (track_elapsed_ms >= TRACK_MAX_RUN_TIME_MS))
+            if ((last_control_tick == 0U) || (now_tick <= last_control_tick))
             {
-                trackStop(now_tick);
+                control_dt_s = TRACK_CONTROL_DT_S;
             }
             else
             {
-                forward_speed =
-                    trackCalculateForwardSpeed(remaining_distance_m);
-                chassis.set_velocity(&chassis, forward_speed, -turn_speed);
+                control_dt_s =
+                    (float)(now_tick - last_control_tick) * 0.001f;
+                if (control_dt_s < 0.001f)
+                    control_dt_s = 0.001f;
+                if (control_dt_s > 0.05f)
+                    control_dt_s = 0.05f;
             }
+            last_control_tick = now_tick;
+            if (mode == ROBOT_MODE_REQUIREMENT_2)
+                trackRunRequirement2(now_tick, control_dt_s);
+            else if (mode == ROBOT_MODE_REQUIREMENT_4)
+                trackRunRequirement4(now_tick, control_dt_s);
+            else
+                trackStop(now_tick);
         }
         else
         {
+            last_control_tick = 0U;
             chassis.set_velocity(&chassis, 0.0f, 0.0f);
         }
-        osDelay(20);
+        osDelay(5);
     }
+}
+
+static bool trackModeIsSupported(uint8_t selected_mode)
+{
+    return (selected_mode == ROBOT_MODE_REQUIREMENT_2) ||
+           (selected_mode == ROBOT_MODE_REQUIREMENT_4);
+}
+
+static void trackRunRequirement2(uint32_t now_tick, float dt_s)
+{
+    ChassisData_t chassis_data;
+    float distance_m;
+    float remaining_distance_m;
+    float forward_speed;
+    float turn_speed;
+    bool finish_line_detected;
+
+    turn_speed = track.update(&track, dt_s);
+    chassis.get_data(&chassis, &chassis_data);
+    distance_m = (chassis_data.distance_m >= 0.0f) ?
+                 chassis_data.distance_m : -chassis_data.distance_m;
+    remaining_distance_m = TRACK_LAP_DISTANCE_M - distance_m;
+    finish_line_detected =
+        (distance_m >= TRACK_FINISH_ARM_DISTANCE_M) &&
+        (track.data.black_count >= TRACK_FINISH_LINE_MIN_BLACK_COUNT);
+
+    if (finish_line_detected ||
+        (remaining_distance_m <= TRACK_POSITION_TOLERANCE_M) ||
+        (track_elapsed_ms >= TRACK_MAX_RUN_TIME_MS))
+    {
+        trackStop(now_tick);
+    }
+    else
+    {
+        forward_speed = trackCalculateForwardSpeed(remaining_distance_m);
+        forward_speed = trackLimitForwardSpeed(forward_speed);
+        chassis.set_velocity(&chassis, forward_speed, -turn_speed);
+        trackCaptureTelemetry(now_tick);
+    }
+}
+
+static void trackRunRequirement4(uint32_t now_tick, float dt_s)
+{
+    ChassisData_t chassis_data;
+    float distance_m;
+    float turn_speed;
+
+    turn_speed = track.update(&track, dt_s);
+    chassis.get_data(&chassis, &chassis_data);
+    distance_m = (chassis_data.distance_m >= 0.0f) ?
+                 chassis_data.distance_m : -chassis_data.distance_m;
+
+    if ((distance_m >= REQUIREMENT4_AB_DISTANCE_M) ||
+        (track_elapsed_ms >= REQUIREMENT4_MAX_RUN_TIME_MS))
+    {
+        trackStop(now_tick);
+    }
+    else
+    {
+        chassis.set_velocity(&chassis,
+                             trackLimitForwardSpeed(
+                                 REQUIREMENT4_FORWARD_SPEED_MPS),
+                             -turn_speed);
+        trackCaptureTelemetry(now_tick);
+    }
+}
+
+static void trackCaptureTelemetry(uint32_t now_tick)
+{
+    uint32_t index;
+    volatile TrackTelemetrySample_t *sample;
+
+    if (track_elapsed_ms < TRACK_TELEMETRY_START_DELAY_MS)
+        return;
+    if (track_telemetry_write_count >= TRACK_TELEMETRY_CAPACITY)
+        return;
+    if ((now_tick - track_telemetry_last_tick) < TRACK_TELEMETRY_PERIOD_MS)
+        return;
+
+    track_telemetry_last_tick = now_tick;
+    index = track_telemetry_write_count;
+    sample = &track_telemetry[index];
+    sample->black_mask = (uint8_t)track.data.black_mask;
+    sample->error_x10 =
+        (int8_t)(track.data.normalized_error * 10.0f);
+    sample->turn_x100 =
+        (int8_t)(track.data.turn_speed * 100.0f);
+    sample->black_count = track.data.black_count;
+    sample->left_speed_x1000 =
+        (int16_t)(wheel_left.data.linear_speed_mps * 1000.0f);
+    sample->right_speed_x1000 =
+        (int16_t)(wheel_right.data.linear_speed_mps * 1000.0f);
+    sample->distance_mm = (int16_t)(chassis.data.distance_m * 1000.0f);
+    track_telemetry_write_count++;
 }
 
 static void trackStart(uint32_t start_tick)
@@ -433,6 +575,11 @@ static void trackStart(uint32_t start_tick)
     track_start_tick = start_tick;
     track_elapsed_ms = 0U;
     track_total_time_ms = 0U;
+    track_slow_until_tick = start_tick;
+    track_telemetry_write_count = 0U;
+    track_telemetry_last_tick =
+        start_tick + TRACK_TELEMETRY_START_DELAY_MS -
+        TRACK_TELEMETRY_PERIOD_MS;
     track_running = true;
     led_red.on(&led_red);
 }
@@ -440,6 +587,7 @@ static void trackStart(uint32_t start_tick)
 static void trackStop(uint32_t stop_tick)
 {
     chassis.set_velocity(&chassis, 0.0f, 0.0f);
+    trackCaptureTelemetry(stop_tick);
     track.pid.reset(&track.pid);
     track_elapsed_ms = stop_tick - track_start_tick;
     track_total_time_ms = track_elapsed_ms;
@@ -449,6 +597,7 @@ static void trackStop(uint32_t stop_tick)
 
 static float trackCalculateForwardSpeed(float remaining_distance_m)
 {
+    //位置环计算
     float forward_speed = TRACK_POSITION_KP * remaining_distance_m;
 
     if (forward_speed > track.init_config.base_speed)
@@ -457,6 +606,41 @@ static float trackCalculateForwardSpeed(float remaining_distance_m)
         forward_speed = 0.0f;
 
     return forward_speed;
+}
+
+static float trackLimitForwardSpeed(float requested_speed_mps)
+{
+    float absolute_error = track.data.normalized_error;
+    float speed_scale = 1.0f;
+    uint32_t now_tick = HAL_GetTick();
+    bool outer_sensor_only =
+        (track.data.black_mask == 0x01U) ||
+        (track.data.black_mask == 0x80U);
+
+    if (absolute_error < 0.0f)
+        absolute_error = -absolute_error;
+
+    if (outer_sensor_only || (absolute_error >= 3.0f))
+        track_slow_until_tick = now_tick + TRACK_CORNER_EXIT_HOLD_MS;
+
+    if (track.data.black_count == 0U)
+        speed_scale = 0.35f;
+    else if (outer_sensor_only)
+        speed_scale = 0.50f;
+    else if (absolute_error >= 3.0f)
+        speed_scale = 0.55f;
+    else if (absolute_error >= 2.0f)
+        speed_scale = 0.70f;
+    else if (absolute_error >= 1.0f)
+        speed_scale = 0.85f;
+
+    if (((int32_t)(track_slow_until_tick - now_tick) > 0) &&
+        (speed_scale > 0.65f))
+    {
+        speed_scale = 0.65f;
+    }
+
+    return requested_speed_mps * speed_scale;
 }
 
 void UART_IMU0_INST_IRQHandler(void)
@@ -477,7 +661,7 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
     {
         if (event == KEY_EVENT_PRESS)
         {
-            if (mode == ROBOT_MODE_TRACK)
+            if (trackModeIsSupported(mode))
             {
                 if (!track_running && !track_start_requested)
                 {
@@ -493,6 +677,17 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
             }
         }
     }
+}
+
+static void keyA07HandleInterrupt(void)
+{
+    uint32_t now_tick = HAL_GetTickFromISR();
+
+    if ((now_tick - key_a07_last_toggle_tick) < KEY_A07_DEBOUNCE_MS)
+        return;
+
+    key_a07_last_toggle_tick = now_tick;
+    led_green.toggle(&led_green);
 }
 
 static void key1ProcessEvents(void)
@@ -546,7 +741,7 @@ static void key1ProcessEvents(void)
         {
             mode = ((mode < 2U) || (mode >= 6U)) ?
                    2U : (uint8_t)(mode + 1U);
-            if (mode != ROBOT_MODE_TRACK)
+            if (!trackModeIsSupported(mode))
             {
                 track_start_requested = false;
                 if (track_running)
@@ -634,6 +829,7 @@ static void keyInit(void){
     key1_stable_pressed = key1_sample_pressed;
     key1_sample_change_tick = HAL_GetTick();
     key1_press_tick = key1_sample_change_tick;
+    key_a07_last_toggle_tick = HAL_GetTick() - KEY_A07_DEBOUNCE_MS;
 
     NVIC_ClearPendingIRQ(GPIO_MULTIPLE_GPIOA_INT_IRQN);
     NVIC_SetPriority(GPIO_MULTIPLE_GPIOA_INT_IRQN, 2U);
@@ -671,6 +867,9 @@ static void gpioInterruptDispatch(GPIO_TypeDef *GPIOx)
         {
             switch (pending)
             {
+                case GPIO_KEY_KEY_A07_IIDX:
+                    keyA07HandleInterrupt();
+                    break;
                 case GPIO_KEY_KEY_A18_IIDX:
                     GPIOIRQHandler(GPIOx, GPIO_KEY_KEY_A18_PIN);
                     break;
@@ -730,19 +929,20 @@ static void trackInit(void){
         .gray = &gray,
         .channel_count = 8U,
         .weights = { -3.5f, -2.5f, -1.5f, -0.5f, 0.5f, 1.5f, 2.5f, 3.5f },
-        .base_speed = 0.4f,
-        .max_turn_speed = 0.8f,
+        .base_speed = 0.2f,
+        .max_turn_speed = 1.2f,
         .pid_config = {
-            .kp = 0.15f,
+            .kp = 0.28f,
             .ki = 0.0f,
-            .kd = 0.0f,
+            .kd = 0.002f,
             .enable_output_limit = true,
-            .output_min = -0.8f,
-            .output_max = 0.8f,
+            .output_min = -1.2f,
+            .output_max = 1.2f,
             .enable_integral_limit = true,
             .integral_min = -1.0f,
             .integral_max = 1.0f,
             .deadband = 0.0f,
+            .derivative_filter_tau_s = 0.03f,
             .derivative_on_measurement = false,
             .reset_integral_on_deadband = true,
         },
@@ -861,6 +1061,7 @@ static void pidInit(void)
         .integral_min = -0.5f,
         .integral_max = 0.5f,
         .deadband     = 0.003f,
+        .derivative_filter_tau_s = 0.0f,
         .derivative_on_measurement  = true,
         .reset_integral_on_deadband = false,
     };
@@ -875,6 +1076,7 @@ static void pidInit(void)
         .integral_min = -0.5f,
         .integral_max = 0.5f,
         .deadband     = 0.003f,
+        .derivative_filter_tau_s = 0.0f,
         .derivative_on_measurement  = true,
         .reset_integral_on_deadband = false,
     };

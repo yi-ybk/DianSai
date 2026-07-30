@@ -2,13 +2,49 @@
 Debug/
 Release/
 *.out
+*.elf
+*.hex
+*.bin
 *.map
 *_linkInfo.xml
+*.obj
+*.o
+*.d
+*.dep
+*.lst
+
+# CCS/TI local workspaces and temporary state
+.ccs-cli-workspace*/
+.ccs-server/
+.ti-appdata/
+.metadata/
+.history/
+tmp/
 
 # Local editor and language-server state
 .vscode/ipch/
 .vscode/.browse.VC.db
+.vscode/.browse.VC.db*
+.vscode/*.opendb
+.vscode/.cache/
 .vscode/*.log
 .clangd
 .theia/
 .codex/
+
+# Debug-probe logs
+JLinkLog.txt
+*.jlinklog
+
+# OS and editor temporary files
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo
+*.tmp
+*.bak
+
+# Local contest reference
+/H题_车载平衡滚球运动控制系统.pdf

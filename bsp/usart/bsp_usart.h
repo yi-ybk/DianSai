@@ -141,7 +141,7 @@ void USARTSend(USARTInstance *instance,
  * @param send_size 发送字节数
  * @param timeout_ms 超时时间，单位ms
  * @return true发送成功，false发送失败
- * @note MSPM0 DriverLib阻塞发送不支持超时，timeout_ms仅为保持接口兼容
+ * @note timeout_ms为0时使用驱动默认超时；等待期间主动让出CPU
  */
 bool USARTSendBlocking(USARTInstance *instance,
                        const uint8_t *send_buf,

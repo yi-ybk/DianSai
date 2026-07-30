@@ -24,6 +24,7 @@ typedef struct
     float integral_max;               /**< 积分输出最大值 */
 
     float deadband;                   /**< 误差死区，误差绝对值小于该值时视为0 */
+    float derivative_filter_tau_s;    /**< 微分项一阶低通时间常数(s)，0表示不滤波 */
     bool derivative_on_measurement;   /**< 是否对测量值做微分，启用后可减小目标阶跃引起的微分冲击 */
     bool reset_integral_on_deadband;  /**< 进入死区时是否清除积分 */
 } PidInitConfig_t;

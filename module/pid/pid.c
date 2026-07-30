@@ -51,7 +51,9 @@ float PidCalculate(Pid_t *pid, float feedback, float target, float dt_s)
 {
     bool has_last_sample;
     float error;
+    float raw_derivative;
     float derivative;
+    float derivative_alpha;
     float output;
 
     if ((pid == NULL) || (!pid->initialized))
@@ -78,13 +80,25 @@ float PidCalculate(Pid_t *pid, float feedback, float target, float dt_s)
             pid->data.integral = 0.0f;
     }
 
-    derivative = 0.0f;
+    raw_derivative = 0.0f;
     if ((dt_s > 0.0f) && has_last_sample)
     {
         if (pid->init_config.derivative_on_measurement)
-            derivative = -(feedback - pid->data.last_feedback) / dt_s;
+            raw_derivative =
+                -(feedback - pid->data.last_feedback) / dt_s;
         else
-            derivative = (error - pid->data.last_error) / dt_s;
+            raw_derivative = (error - pid->data.last_error) / dt_s;
+    }
+
+    derivative = raw_derivative;
+    if (has_last_sample && (dt_s > 0.0f) &&
+        (pid->init_config.derivative_filter_tau_s > 0.0f))
+    {
+        derivative_alpha =
+            dt_s / (pid->init_config.derivative_filter_tau_s + dt_s);
+        derivative = pid->data.derivative +
+                     derivative_alpha *
+                     (raw_derivative - pid->data.derivative);
     }
 
     if ((dt_s > 0.0f) && (!pid->data.in_deadband))
@@ -235,6 +249,9 @@ static bool PidConfigIsValid(const PidInitConfig_t *config)
         return false;
 
     if (config->deadband < 0.0f)
+        return false;
+
+    if (config->derivative_filter_tau_s < 0.0f)
         return false;
 
     if (config->enable_output_limit && (config->output_min > config->output_max))

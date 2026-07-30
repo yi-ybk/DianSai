@@ -23,6 +23,8 @@ typedef struct
 {
     int32_t error;
     float normalized_error;
+    float last_nonzero_error;
+    float line_lost_time_s;
     float turn_speed;
     uint32_t black_mask;
     uint8_t black_count;

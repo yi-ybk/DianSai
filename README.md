@@ -120,18 +120,18 @@ VS Code 不是独立编译环境，当前任务仍然调用已安装的 CCS 命�
 
 #### `.vscode/ccs-build.ps1`
 
-修改 CCS 命令行工具路径：
+本工程默认使用以下 CCS 命令行工具：
 
 ```powershell
-$ccs = "E:\ccs2100\ccs\eclipse\ccs-server-cli.bat"
+C:\TI\ccs2100\ccs\eclipse\ccs-server-cli.bat
 ```
 
-将其改为接收方电脑上 `ccs-server-cli.bat` 的实际路径。
+换电脑后可在任务或脚本参数中传入新的 `-CcsCli` 路径。
 
-同时修改 CLI 专用工作区：
+CLI 专用工作区默认位于工程同级目录：
 
 ```powershell
-$ws = "D:\STM32Hal\.ccs-cli-workspace-DianSai_MSPM0G3507-official-v1"
+D:\DianSai\m0\m0\.ccs-cli-workspace-compile-check
 ```
 
 `$ws` 可以改成任意可写的本地目录，但不要指向工程源码目录，也不建议与正在运行的 CCS GUI 共用同一个工作区。
@@ -154,9 +154,9 @@ $ws = "D:\STM32Hal\.ccs-cli-workspace-DianSai_MSPM0G3507-official-v1"
 | --- | --- |
 | `CCS: Build Debug` | 增量编译 Debug 配置 |
 | `CCS: Full Build Debug` | 完整重新编译 Debug 配置 |
-| `J-Link: Build and Flash Debug` | 先增量编译，再使用 J-Link 烧录 |
+| `MSPM0: 一键编译并烧录` | 完整编译成功后自动烧录、校验并复位 |
 
-默认构建快捷键 `Ctrl+Shift+B` 对应 `CCS: Build Debug`。
+默认构建快捷键 `Ctrl+Shift+B` 对应 `MSPM0: 一键编译并烧录`。
 
 首次执行 VS Code 编译任务时，脚本会尝试把主工程和同级 FreeRTOS 引用工程自动导入 CLI 工作区。
 
@@ -178,7 +178,7 @@ $ws = "D:\STM32Hal\.ccs-cli-workspace-DianSai_MSPM0G3507-official-v1"
 
 1. 安装 SEGGER J-Link Software。
 2. 先确认工程能生成 `Debug/DianSai_MSPM0G3507.out`。
-3. 运行任务 `J-Link: Build and Flash Debug`。
+3. 按 `Ctrl+Shift+B`，或运行任务 `MSPM0: 一键编译并烧录`。
 
 烧录脚本会自动从 Windows 注册表查找 `JLink.exe`。如果没有找到，可以在 PowerShell 中手动指定：
 

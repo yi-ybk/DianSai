@@ -6,6 +6,8 @@
 #include "bsp_usart.h"
 #include <string.h>
 
+#define USART_BLOCKING_DEFAULT_TIMEOUT_MS 100U
+
 /* -------------------- 静态变量区 -------------------- */
 /** @brief 已注册的UART实例总数 */
 static uint8_t idx;
@@ -206,7 +208,9 @@ bool USARTSendBlocking(USARTInstance *instance,
                        uint16_t send_size,
                        uint32_t timeout_ms)
 {
-    (void)timeout_ms;
+    UART_Regs *uart;
+    TickType_t start_tick;
+    TickType_t timeout_ticks;
 
     if ((instance == NULL) || (instance->usart_handle == NULL) ||
         (instance->usart_handle->Instance == NULL) || (send_buf == NULL) ||
@@ -215,8 +219,33 @@ bool USARTSendBlocking(USARTInstance *instance,
         return false;
     }
 
+    uart = instance->usart_handle->Instance;
+    if (timeout_ms == 0U)
+        timeout_ms = USART_BLOCKING_DEFAULT_TIMEOUT_MS;
+    timeout_ticks = pdMS_TO_TICKS(timeout_ms);
+    if (timeout_ticks == 0U)
+        timeout_ticks = 1U;
+    start_tick = xTaskGetTickCount();
+
     for (uint16_t i = 0U; i < send_size; i++)
-        DL_UART_transmitDataBlocking(instance->usart_handle->Instance, send_buf[i]);
+    {
+        while (DL_UART_isTXFIFOFull(uart))
+        {
+            if ((xTaskGetTickCount() - start_tick) >= timeout_ticks)
+                return false;
+            if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
+                taskYIELD();
+        }
+        DL_UART_transmitData(uart, send_buf[i]);
+    }
+
+    while (!DL_UART_isTXFIFOEmpty(uart))
+    {
+        if ((xTaskGetTickCount() - start_tick) >= timeout_ticks)
+            return false;
+        if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
+            taskYIELD();
+    }
 
     return true;
 }

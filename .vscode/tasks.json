@@ -19,11 +19,7 @@
             },
             "problemMatcher": [
                 "$gcc"
-            ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            }
+            ]
         },
         {
             "label": "CCS: Full Build Debug",
@@ -54,7 +50,9 @@
                 "-ExecutionPolicy",
                 "Bypass",
                 "-File",
-                "${workspaceFolder}/.vscode/jlink-flash.ps1"
+                "${workspaceFolder}/.vscode/jlink-flash.ps1",
+                "-JLinkExe",
+                "D:/JLINK/JLink_V850/JLink.exe"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
@@ -62,7 +60,7 @@
             "problemMatcher": []
         },
         {
-            "label": "J-Link: Build and Flash Debug",
+            "label": "MSPM0: 一键编译并烧录",
             "type": "shell",
             "command": "powershell.exe",
             "args": [
@@ -70,14 +68,31 @@
                 "-ExecutionPolicy",
                 "Bypass",
                 "-File",
-                "${workspaceFolder}/.vscode/jlink-flash.ps1"
+                "${workspaceFolder}/.vscode/mspm0-build-flash.ps1",
+                "-BuildType",
+                "full",
+                "-CcsCli",
+                "C:/TI/ccs2100/ccs/eclipse/ccs-server-cli.bat",
+                "-JLinkExe",
+                "D:/JLINK/JLink_V850/JLink.exe",
+                "-SpeedKHz",
+                "100"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
             },
-            "dependsOrder": "sequence",
-            "dependsOn": "CCS: Build Debug",
-            "problemMatcher": []
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
         }
     ]
 }

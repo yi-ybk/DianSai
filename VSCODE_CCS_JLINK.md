@@ -16,10 +16,10 @@ J-Link Commander:
 D:\JLINK\JLink_V850\JLink.exe
 ```
 
-CCS 命令行使用独立工作区：
+CCS 命令行使用工程同级的独立工作区：
 
 ```text
-%LOCALAPPDATA%\TI\CCS\workspaces\DianSai_MSPM0G3507-cli
+D:\DianSai\m0\m0\.ccs-cli-workspace-compile-check
 ```
 
 它不会和 CCS 图形界面的工作区互相占用，也不会写入工程源码目录。
@@ -45,9 +45,9 @@ D:\DianSai\m0\m0\freertos_builds_LP_MSPM0G3507_release_ticlang
 | `CCS: Build Debug` | 增量编译 Debug |
 | `CCS: Full Build Debug` | 完整重新编译 Debug |
 | `J-Link: Flash Debug` | 直接烧录现有 Debug 输出 |
-| `J-Link: Build and Flash Debug` | 先增量编译，再烧录 |
+| `MSPM0: 一键编译并烧录` | 完整编译成功后自动烧录、校验并复位 |
 
-默认构建快捷键 `Ctrl+Shift+B` 对应 `CCS: Build Debug`。
+默认构建快捷键 `Ctrl+Shift+B` 对应 `MSPM0: 一键编译并烧录`。
 
 首次编译时，脚本会把主工程及同级 FreeRTOS 引用工程导入 CCS 命令行工作区。编译成功后输出：
 
@@ -67,6 +67,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .vscode\ccs-build.ps1 -B
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .vscode\ccs-build.ps1 -BuildType full
+```
+
+一键编译并烧录：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .vscode\mspm0-build-flash.ps1
 ```
 
 烧录：
