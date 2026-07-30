@@ -31,8 +31,11 @@ static void keyA07HandleInterrupt(void);
 static void oledDrawDefaultPage(void);
 static void oledDrawBallPage(void);
 static bool trackModeIsSupported(uint8_t selected_mode);
+static bool trackModeUsesStableProfile(uint8_t selected_mode);
+static bool trackFinishLineDetected(float distance_m);
 static void trackRunRequirement2(uint32_t now_tick, float dt_s);
 static void trackRunRequirement4(uint32_t now_tick, float dt_s);
+static void trackRunRequirement5Or6(uint32_t now_tick, float dt_s);
 static void trackCaptureTelemetry(uint32_t now_tick);
 static void trackStart(uint32_t start_tick);
 static void trackStop(uint32_t stop_tick);
@@ -173,24 +176,46 @@ float ball_real   = 10.0f;
 
 #define ROBOT_MODE_REQUIREMENT_2          2U
 #define ROBOT_MODE_REQUIREMENT_4          4U
+#define ROBOT_MODE_REQUIREMENT_5          5U
+#define ROBOT_MODE_REQUIREMENT_6          6U
+#define TRACK_USE_SMALL_TEST_MAP          1U
+#if TRACK_USE_SMALL_TEST_MAP
+#define TRACK_LAP_DISTANCE_M              3.75f
+#define TRACK_FINISH_ARM_DISTANCE_M       3.50f
+#else
 #define TRACK_LAP_DISTANCE_M              (3.0f + 3.14159265f)
 #define TRACK_FINISH_ARM_DISTANCE_M       5.5f
+#endif
 #define TRACK_POSITION_TOLERANCE_M        0.02f
 #define TRACK_POSITION_KP                 1.0f
-#define TRACK_FINISH_LINE_MIN_BLACK_COUNT 5U
+#define TRACK_FINISH_LINE_LEFT_MASK       0x1CU
+#define TRACK_FINISH_LINE_RIGHT_MASK      0x38U
+#define TRACK_FINISH_LINE_ARM_TIME_MS     2000U
+#define TRACK_FINISH_LINE_CONFIRM_SAMPLES 6U
 #define TRACK_MAX_RUN_TIME_MS             20000U
 #define REQUIREMENT4_AB_DISTANCE_M        1.5f
-#define REQUIREMENT4_FORWARD_SPEED_MPS    0.4f
+#define REQUIREMENT4_FORWARD_SPEED_MPS    0.35f
 #define REQUIREMENT4_MAX_RUN_TIME_MS      8000U
+#define REQUIREMENT4_CURVE_ARM_DISTANCE_M 0.9f
+#define REQUIREMENT4_CURVE_ERROR_THRESHOLD 2.0f
+#define REQUIREMENT4_CURVE_CONFIRM_SAMPLES 4U
 #define KEY_A07_DEBOUNCE_MS               50U
 #define OLED_COUNTER_INTERVAL_MS           1000U
 #define TRACK_CONTROL_DT_S                 0.005f
 #define TRACK_TELEMETRY_CAPACITY           1600U
 #define TRACK_TELEMETRY_PERIOD_MS          10U
-#define TRACK_TELEMETRY_START_DELAY_MS     4000U
-#define TRACK_CORNER_EXIT_HOLD_MS          300U
+#define TRACK_TELEMETRY_START_DELAY_MS        0U
+#define TRACK_CORNER_EXIT_HOLD_MS          600U
 #define TRACK_FORWARD_ACCEL_MPS2           1.10f
-#define TRACK_FORWARD_DECEL_MPS2           2.00f
+#define TRACK_FORWARD_DECEL_MPS2           3.50f
+#define TRACK_AGGRESSIVE_MAX_TURN_SPEED     0.72f
+#define TRACK_RECOVERY_MAX_TURN_SPEED       0.85f
+#define TRACK_LARGE_ERROR_TURN_GAIN          1.25f
+#define TRACK_STABLE_BASE_SPEED_MPS         0.45f
+#define TRACK_STABLE_MAX_TURN_SPEED         0.60f
+#define TRACK_STABLE_FORWARD_ACCEL_MPS2     0.60f
+#define TRACK_STABLE_FORWARD_DECEL_MPS2     0.90f
+#define TRACK_STABLE_MAX_RUN_TIME_MS       30000U
 /*
 TRACK_LAP_DISTANCE_M：跑一圈的目标距离，当前约 6.1416m。
 TRACK_FINISH_ARM_DISTANCE_M：行驶超过 5.5m 后，才允许识别 A 点终点黑线，避免刚启动就误判。
@@ -199,7 +224,7 @@ TRACK_POSITION_KP：位置环 P 参数。增大后接近终点时速度更高，
 TRACK_FINISH_LINE_MIN_BLACK_COUNT：至少多少路灰度传感器检测到黑色，才认为到达终点线。
 TRACK_MAX_RUN_TIME_MS：最长运行时间，当前 20000ms。
 REQUIREMENT4_AB_DISTANCE_M：要求 4 从 A 到 B 的目标里程，当前 1.5m。
-REQUIREMENT4_FORWARD_SPEED_MPS：要求 4 的巡线前进速度，当前 0.4m/s。
+REQUIREMENT4_FORWARD_SPEED_MPS：要求 4 的巡线前进速度，当前 0.35m/s。
 REQUIREMENT4_MAX_RUN_TIME_MS：要求 4 的 AB 最大运行时间，当前 8000ms。
 */
 volatile uint8_t mode = ROBOT_MODE_REQUIREMENT_2;
@@ -207,6 +232,13 @@ volatile uint32_t oled_refresh_error_count = 0U;
 volatile uint32_t oled_recovery_count = 0U;
 volatile uint32_t imu0_init_error = 0U;
 static uint32_t oled_default_counter = 0U;
+static uint8_t requirement4_curve_detect_count = 0U;
+volatile uint8_t track_finish_line_detect_count = 0U;
+volatile uint8_t track_finish_last_mask = 0U;
+volatile uint8_t track_finish_last_raw_count = 0U;
+volatile uint32_t track_finish_pattern_hit_count = 0U;
+volatile uint32_t track_finish_trigger_count = 0U;
+volatile uint8_t track_stop_reason = 0U;
 
 typedef struct
 {
@@ -341,6 +373,14 @@ static void oledDrawDefaultPage(void)
             oled.draw_string(&oled, 0, 2,
                              running ? "R4:RUN" : "R4:STOP",
                              OLED_COLOR_WHITE);
+        else if (mode == ROBOT_MODE_REQUIREMENT_5)
+            oled.draw_string(&oled, 0, 2,
+                             running ? "R5:RUN" : "R5:STOP",
+                             OLED_COLOR_WHITE);
+        else if (mode == ROBOT_MODE_REQUIREMENT_6)
+            oled.draw_string(&oled, 0, 2,
+                             running ? "R6:RUN" : "R6:STOP",
+                             OLED_COLOR_WHITE);
         else
             oled.draw_string(&oled, 0, 2,
                              running ? "R2:RUN" : "R2:STOP",
@@ -465,6 +505,9 @@ static void trackTask(void *argument)
                 trackRunRequirement2(now_tick, control_dt_s);
             else if (mode == ROBOT_MODE_REQUIREMENT_4)
                 trackRunRequirement4(now_tick, control_dt_s);
+            else if ((mode == ROBOT_MODE_REQUIREMENT_5) ||
+                     (mode == ROBOT_MODE_REQUIREMENT_6))
+                trackRunRequirement5Or6(now_tick, control_dt_s);
             else
                 trackStop(now_tick);
         }
@@ -480,7 +523,63 @@ static void trackTask(void *argument)
 static bool trackModeIsSupported(uint8_t selected_mode)
 {
     return (selected_mode == ROBOT_MODE_REQUIREMENT_2) ||
-           (selected_mode == ROBOT_MODE_REQUIREMENT_4);
+           (selected_mode == ROBOT_MODE_REQUIREMENT_4) ||
+           (selected_mode == ROBOT_MODE_REQUIREMENT_5) ||
+           (selected_mode == ROBOT_MODE_REQUIREMENT_6);
+}
+
+static bool trackModeUsesStableProfile(uint8_t selected_mode)
+{
+    return (selected_mode == ROBOT_MODE_REQUIREMENT_4) ||
+           (selected_mode == ROBOT_MODE_REQUIREMENT_5) ||
+           (selected_mode == ROBOT_MODE_REQUIREMENT_6);
+}
+
+static bool trackFinishLineDetected(float distance_m)
+{
+    uint32_t mask = track.data.black_mask & 0xFFU;
+    uint8_t raw_black_count = 0U;
+    uint8_t channel;
+    bool center_pattern_detected;
+    bool pattern_detected;
+
+    for (channel = 0U; channel < 8U; ++channel)
+    {
+        if ((mask & (1UL << channel)) != 0U)
+            raw_black_count++;
+    }
+
+    center_pattern_detected =
+        ((mask & TRACK_FINISH_LINE_LEFT_MASK) ==
+         TRACK_FINISH_LINE_LEFT_MASK) ||
+        ((mask & TRACK_FINISH_LINE_RIGHT_MASK) ==
+         TRACK_FINISH_LINE_RIGHT_MASK);
+    pattern_detected = center_pattern_detected;
+    track_finish_last_mask = (uint8_t)mask;
+    track_finish_last_raw_count = raw_black_count;
+
+    if ((track_elapsed_ms >= TRACK_FINISH_LINE_ARM_TIME_MS) &&
+        (distance_m >= TRACK_FINISH_ARM_DISTANCE_M) &&
+        pattern_detected)
+    {
+        track_finish_pattern_hit_count++;
+        if (track_finish_line_detect_count <
+            TRACK_FINISH_LINE_CONFIRM_SAMPLES)
+            track_finish_line_detect_count++;
+    }
+    else
+    {
+        track_finish_line_detect_count = 0U;
+    }
+
+    if (track_finish_line_detect_count >=
+        TRACK_FINISH_LINE_CONFIRM_SAMPLES)
+    {
+        track_finish_trigger_count++;
+        return true;
+    }
+
+    return false;
 }
 
 static void trackRunRequirement2(uint32_t now_tick, float dt_s)
@@ -489,22 +588,50 @@ static void trackRunRequirement2(uint32_t now_tick, float dt_s)
     float distance_m;
     float remaining_distance_m;
     float forward_speed;
+    float absolute_error;
     float turn_speed;
+    float turn_speed_limit;
     bool finish_line_detected;
 
     turn_speed = track.update(&track, dt_s);
+    absolute_error = track.data.normalized_error;
+    if (absolute_error < 0.0f)
+        absolute_error = -absolute_error;
+    turn_speed_limit = TRACK_AGGRESSIVE_MAX_TURN_SPEED;
+    if ((track.data.black_count == 0U) ||
+        (track.data.black_mask == 0x01U) ||
+        (track.data.black_mask == 0x80U))
+    {
+        turn_speed_limit = TRACK_RECOVERY_MAX_TURN_SPEED;
+    }
+    else if (absolute_error >= 2.0f)
+    {
+        turn_speed *= TRACK_LARGE_ERROR_TURN_GAIN;
+        turn_speed_limit = TRACK_RECOVERY_MAX_TURN_SPEED;
+    }
+    if (turn_speed > turn_speed_limit)
+        turn_speed = turn_speed_limit;
+    else if (turn_speed < -turn_speed_limit)
+        turn_speed = -turn_speed_limit;
     chassis.get_data(&chassis, &chassis_data);
     distance_m = (chassis_data.distance_m >= 0.0f) ?
                  chassis_data.distance_m : -chassis_data.distance_m;
     remaining_distance_m = TRACK_LAP_DISTANCE_M - distance_m;
-    finish_line_detected =
-        (distance_m >= TRACK_FINISH_ARM_DISTANCE_M) &&
-        (track.data.black_count >= TRACK_FINISH_LINE_MIN_BLACK_COUNT);
+    finish_line_detected = trackFinishLineDetected(distance_m);
 
-    if (finish_line_detected ||
-        (remaining_distance_m <= TRACK_POSITION_TOLERANCE_M) ||
-        (track_elapsed_ms >= TRACK_MAX_RUN_TIME_MS))
+    if (finish_line_detected)
     {
+        track_stop_reason = 1U;
+        trackStop(now_tick);
+    }
+    else if (remaining_distance_m <= TRACK_POSITION_TOLERANCE_M)
+    {
+        track_stop_reason = 2U;
+        trackStop(now_tick);
+    }
+    else if (track_elapsed_ms >= TRACK_MAX_RUN_TIME_MS)
+    {
+        track_stop_reason = 3U;
         trackStop(now_tick);
     }
     else
@@ -520,15 +647,42 @@ static void trackRunRequirement2(uint32_t now_tick, float dt_s)
 static void trackRunRequirement4(uint32_t now_tick, float dt_s)
 {
     ChassisData_t chassis_data;
+    float absolute_error;
     float distance_m;
     float turn_speed;
+    bool curve_signal;
+    bool outer_sensor_only;
 
     turn_speed = track.update(&track, dt_s);
     chassis.get_data(&chassis, &chassis_data);
     distance_m = (chassis_data.distance_m >= 0.0f) ?
                  chassis_data.distance_m : -chassis_data.distance_m;
+    absolute_error = track.data.normalized_error;
+    if (absolute_error < 0.0f)
+        absolute_error = -absolute_error;
+    outer_sensor_only =
+        (track.data.black_mask == 0x01U) ||
+        (track.data.black_mask == 0x80U);
+    curve_signal = (distance_m >= REQUIREMENT4_CURVE_ARM_DISTANCE_M) &&
+                   (outer_sensor_only ||
+                    (absolute_error >= REQUIREMENT4_CURVE_ERROR_THRESHOLD));
+
+    if (curve_signal)
+    {
+        if (requirement4_curve_detect_count <
+            REQUIREMENT4_CURVE_CONFIRM_SAMPLES)
+        {
+            requirement4_curve_detect_count++;
+        }
+    }
+    else
+    {
+        requirement4_curve_detect_count = 0U;
+    }
 
     if ((distance_m >= REQUIREMENT4_AB_DISTANCE_M) ||
+        (requirement4_curve_detect_count >=
+         REQUIREMENT4_CURVE_CONFIRM_SAMPLES) ||
         (track_elapsed_ms >= REQUIREMENT4_MAX_RUN_TIME_MS))
     {
         trackStop(now_tick);
@@ -541,6 +695,54 @@ static void trackRunRequirement4(uint32_t now_tick, float dt_s)
                 trackLimitForwardSpeed(REQUIREMENT4_FORWARD_SPEED_MPS),
                 dt_s),
             -turn_speed);
+        trackCaptureTelemetry(now_tick);
+    }
+}
+
+/* Requirement 5/6 currently reuse the one-lap route; their route actions can
+ * be added independently without changing the stable chassis profile. */
+static void trackRunRequirement5Or6(uint32_t now_tick, float dt_s)
+{
+    ChassisData_t chassis_data;
+    float distance_m;
+    float remaining_distance_m;
+    float forward_speed;
+    float turn_speed;
+    bool finish_line_detected;
+
+    turn_speed = track.update(&track, dt_s);
+    if (turn_speed > TRACK_STABLE_MAX_TURN_SPEED)
+        turn_speed = TRACK_STABLE_MAX_TURN_SPEED;
+    else if (turn_speed < -TRACK_STABLE_MAX_TURN_SPEED)
+        turn_speed = -TRACK_STABLE_MAX_TURN_SPEED;
+
+    chassis.get_data(&chassis, &chassis_data);
+    distance_m = (chassis_data.distance_m >= 0.0f) ?
+                 chassis_data.distance_m : -chassis_data.distance_m;
+    remaining_distance_m = TRACK_LAP_DISTANCE_M - distance_m;
+    finish_line_detected = trackFinishLineDetected(distance_m);
+
+    if (finish_line_detected)
+    {
+        track_stop_reason = 1U;
+        trackStop(now_tick);
+    }
+    else if (remaining_distance_m <= TRACK_POSITION_TOLERANCE_M)
+    {
+        track_stop_reason = 2U;
+        trackStop(now_tick);
+    }
+    else if (track_elapsed_ms >= TRACK_STABLE_MAX_RUN_TIME_MS)
+    {
+        track_stop_reason = 3U;
+        trackStop(now_tick);
+    }
+    else
+    {
+        forward_speed = trackCalculateForwardSpeed(remaining_distance_m);
+        forward_speed = trackLimitForwardSpeed(forward_speed);
+        forward_speed = trackSmoothForwardSpeed(forward_speed, dt_s);
+        chassis.set_velocity(&chassis, forward_speed, -turn_speed);
         trackCaptureTelemetry(now_tick);
     }
 }
@@ -584,6 +786,13 @@ static void trackStart(uint32_t start_tick)
     track_total_time_ms = 0U;
     track_slow_until_tick = start_tick;
     track_forward_speed_command = 0.0f;
+    requirement4_curve_detect_count = 0U;
+    track_finish_line_detect_count = 0U;
+    track_finish_last_mask = 0U;
+    track_finish_last_raw_count = 0U;
+    track_finish_pattern_hit_count = 0U;
+    track_finish_trigger_count = 0U;
+    track_stop_reason = 0U;
     track_telemetry_write_count = 0U;
     track_telemetry_last_tick =
         start_tick + TRACK_TELEMETRY_START_DELAY_MS -
@@ -608,9 +817,12 @@ static float trackCalculateForwardSpeed(float remaining_distance_m)
 {
     //位置环计算
     float forward_speed = TRACK_POSITION_KP * remaining_distance_m;
+    float base_speed = trackModeUsesStableProfile(mode) ?
+                       TRACK_STABLE_BASE_SPEED_MPS :
+                       track.init_config.base_speed;
 
-    if (forward_speed > track.init_config.base_speed)
-        forward_speed = track.init_config.base_speed;
+    if (forward_speed > base_speed)
+        forward_speed = base_speed;
     if (forward_speed < 0.0f)
         forward_speed = 0.0f;
 
@@ -622,6 +834,7 @@ static float trackLimitForwardSpeed(float requested_speed_mps)
     float absolute_error = track.data.normalized_error;
     float speed_scale = 1.0f;
     uint32_t now_tick = HAL_GetTick();
+    bool stable_profile = trackModeUsesStableProfile(mode);
     bool outer_sensor_only =
         (track.data.black_mask == 0x01U) ||
         (track.data.black_mask == 0x80U);
@@ -629,24 +842,38 @@ static float trackLimitForwardSpeed(float requested_speed_mps)
     if (absolute_error < 0.0f)
         absolute_error = -absolute_error;
 
-    if (outer_sensor_only || (absolute_error >= 1.5f))
+    if (outer_sensor_only || (absolute_error >= 1.0f))
         track_slow_until_tick = now_tick + TRACK_CORNER_EXIT_HOLD_MS;
 
-    if (track.data.black_count == 0U)
-        speed_scale = 0.07f;
-    else if (outer_sensor_only)
-        speed_scale = 0.28f;
-    else if (absolute_error >= 3.0f)
-        speed_scale = 0.47f;
-    else if (absolute_error >= 2.0f)
-        speed_scale = 0.47f;
-    else if (absolute_error >= 1.0f)
-        speed_scale = 0.65f;
+    if (stable_profile)
+    {
+        if (track.data.black_count == 0U)
+            speed_scale = 0.07f;
+        else if (outer_sensor_only)
+            speed_scale = 0.36f;
+        else if (absolute_error >= 2.0f)
+            speed_scale = 0.46f;
+        else if (absolute_error >= 1.0f)
+            speed_scale = 0.65f;
+    }
+    else
+    {
+        if (track.data.black_count == 0U)
+            speed_scale = 0.07f;
+        else if (outer_sensor_only)
+            speed_scale = 0.12f;
+        else if (absolute_error >= 3.0f)
+            speed_scale = 0.40f;
+        else if (absolute_error >= 2.0f)
+            speed_scale = 0.40f;
+        else if (absolute_error >= 1.0f)
+            speed_scale = 0.50f;
+    }
 
     if (((int32_t)(track_slow_until_tick - now_tick) > 0) &&
-        (speed_scale > 0.47f))
+        (speed_scale > (stable_profile ? 0.46f : 0.40f)))
     {
-        speed_scale = 0.47f;
+        speed_scale = stable_profile ? 0.46f : 0.40f;
     }
 
     return requested_speed_mps * speed_scale;
@@ -655,19 +882,22 @@ static float trackLimitForwardSpeed(float requested_speed_mps)
 static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s)
 {
     float maximum_step;
+    bool stable_profile = trackModeUsesStableProfile(mode);
 
     if (dt_s <= 0.0f)
         dt_s = TRACK_CONTROL_DT_S;
 
     if (target_speed_mps > track_forward_speed_command)
     {
-        maximum_step = TRACK_FORWARD_ACCEL_MPS2 * dt_s;
+        maximum_step = (stable_profile ? TRACK_STABLE_FORWARD_ACCEL_MPS2 :
+                        TRACK_FORWARD_ACCEL_MPS2) * dt_s;
         if ((target_speed_mps - track_forward_speed_command) > maximum_step)
             target_speed_mps = track_forward_speed_command + maximum_step;
     }
     else
     {
-        maximum_step = TRACK_FORWARD_DECEL_MPS2 * dt_s;
+        maximum_step = (stable_profile ? TRACK_STABLE_FORWARD_DECEL_MPS2 :
+                        TRACK_FORWARD_DECEL_MPS2) * dt_s;
         if ((track_forward_speed_command - target_speed_mps) > maximum_step)
             target_speed_mps = track_forward_speed_command - maximum_step;
     }
@@ -772,9 +1002,14 @@ static void key1ProcessEvents(void)
         }
         else
         {
-            mode = (mode == ROBOT_MODE_REQUIREMENT_2) ?
-                   ROBOT_MODE_REQUIREMENT_4 :
-                   ROBOT_MODE_REQUIREMENT_2;
+            if (mode == ROBOT_MODE_REQUIREMENT_2)
+                mode = ROBOT_MODE_REQUIREMENT_4;
+            else if (mode == ROBOT_MODE_REQUIREMENT_4)
+                mode = ROBOT_MODE_REQUIREMENT_5;
+            else if (mode == ROBOT_MODE_REQUIREMENT_5)
+                mode = ROBOT_MODE_REQUIREMENT_6;
+            else
+                mode = ROBOT_MODE_REQUIREMENT_2;
             if (!trackModeIsSupported(mode))
             {
                 track_start_requested = false;

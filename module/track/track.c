@@ -135,9 +135,9 @@ float TrackUpdate(Track_t *track, float dt)
     {
         track->data.line_lost_time_s += dt;
         minimum_search_error = 0.0f;
-        if (track->data.line_lost_time_s >= 0.4f)
+        if (track->data.line_lost_time_s >= 0.25f)
             minimum_search_error = 3.5f;
-        else if (track->data.line_lost_time_s >= 0.15f)
+        else if (track->data.line_lost_time_s >= 0.05f)
             minimum_search_error = 2.5f;
 
         if ((control_error > 0.0f) &&
