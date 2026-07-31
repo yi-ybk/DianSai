@@ -420,6 +420,7 @@ static void Zdt42CanCallback(CANInstance *instance)
         motor->data.position_deg = (float)position * 360.0f / ZDT42_POSITION_COUNTS_PER_REV;
         if (frame_data[1] != 0U)
             motor->data.position_deg = -motor->data.position_deg;
+        motor->data.position_rx_tick = Zdt42GetTickMsFromISR();
     }
 
     motor->data.rx_frame_count++;

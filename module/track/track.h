@@ -28,6 +28,7 @@ typedef struct
     float turn_speed;
     uint32_t black_mask;
     uint8_t black_count;
+    uint8_t direction_change_count;
 } TrackData_t;
 
 struct Track

@@ -1,6 +1,10 @@
 #include "track.h"
 #include <string.h>
 
+#define TRACK_DIRECTION_CHANGE_CONFIRM_SAMPLES 5U
+#define TRACK_SEARCH_START_DELAY_S             0.15f
+#define TRACK_SEARCH_FULL_DELAY_S              0.35f
+
 static void TrackBindMethods(Track_t *track);
 static bool TrackConfigIsValid(const TrackInitConfig_t *config);
 
@@ -37,6 +41,7 @@ float TrackCalculateError(Track_t *track)
     uint8_t run_black_count = 0U;
     uint8_t selected_black_count = 0U;
     bool run_selected = false;
+    bool direction_change_confirmed = false;
 
     if ((track == NULL) || (!track->initialized) || (track->gray == NULL))
         return 0.0f;
@@ -76,6 +81,73 @@ float TrackCalculateError(Track_t *track)
             run_error_sum = 0.0f;
             run_black_count = 0U;
         }
+    }
+
+    if (run_selected &&
+        ((last_normalized_error > 0.1f) ||
+         (last_normalized_error < -0.1f)))
+    {
+        float error_jump;
+
+        /*
+         * Four or more adjacent black sensors indicate a stop line, crossing,
+         * or a wide reflection rather than the normal guide line.  Keep the
+         * entry direction while exposing the raw mask to higher-level finish
+         * detection.
+         */
+        if (selected_black_count >= 4U)
+            selected_error = last_normalized_error;
+
+        /*
+         * A fold or a reflection can briefly create a plausible run on the
+         * opposite side of the array.  Do not let one or two samples reverse
+         * the remembered recovery direction.  A real crossing of the centre
+         * persists and is accepted after three consecutive samples.
+         */
+        if (((track->data.last_nonzero_error > 0.1f) &&
+             (selected_error < -0.1f)) ||
+            ((track->data.last_nonzero_error < -0.1f) &&
+             (selected_error > 0.1f)))
+        {
+            if (track->data.direction_change_count <
+                TRACK_DIRECTION_CHANGE_CONFIRM_SAMPLES)
+            {
+                track->data.direction_change_count++;
+            }
+
+            if (track->data.direction_change_count <
+                TRACK_DIRECTION_CHANGE_CONFIRM_SAMPLES)
+            {
+                selected_error = last_normalized_error;
+            }
+            else
+            {
+                direction_change_confirmed = true;
+                track->data.direction_change_count = 0U;
+            }
+        }
+        else
+        {
+            track->data.direction_change_count = 0U;
+        }
+
+        error_jump = selected_error - last_normalized_error;
+        if (error_jump < 0.0f)
+            error_jump = -error_jump;
+        if ((error_jump > 1.5f) && (!direction_change_confirmed))
+        {
+            /*
+             * A real line cannot cross several sensors in one control period.
+             * Treat such a sample as noise so lost-line recovery keeps turning
+             * in the last valid direction.
+             */
+            run_selected = false;
+            selected_black_count = 0U;
+        }
+    }
+    else
+    {
+        track->data.direction_change_count = 0U;
     }
 
     track->data.black_mask = black_mask;
@@ -135,9 +207,9 @@ float TrackUpdate(Track_t *track, float dt)
     {
         track->data.line_lost_time_s += dt;
         minimum_search_error = 0.0f;
-        if (track->data.line_lost_time_s >= 0.25f)
+        if (track->data.line_lost_time_s >= TRACK_SEARCH_FULL_DELAY_S)
             minimum_search_error = 3.5f;
-        else if (track->data.line_lost_time_s >= 0.05f)
+        else if (track->data.line_lost_time_s >= TRACK_SEARCH_START_DELAY_S)
             minimum_search_error = 2.5f;
 
         if ((control_error > 0.0f) &&

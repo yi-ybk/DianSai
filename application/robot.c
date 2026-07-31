@@ -16,15 +16,19 @@
 #include "motor_driver.h"
 #include "pid.h"
 #include "chassis.h"
+#include "ball_control.h"
+#include "slaver.h"
 
 #include "imu_driver.h"
 #include "mg354pdh0_driver.h"
 
+#include "zhangdatou_42.h"
 /************ 函数声明 **************/
 static void chassisControlTask(void *argument);
 static void oledTask(void *argument);
 static void imuParseTask(void *argument);
 static void trackTask(void *argument);
+static void ballHostControlTask(void *argument);
 
 static void key1ProcessEvents(void);
 static void keyA07HandleInterrupt(void);
@@ -32,6 +36,7 @@ static void oledDrawDefaultPage(void);
 static void oledDrawBallPage(void);
 static bool trackModeIsSupported(uint8_t selected_mode);
 static bool trackModeUsesStableProfile(uint8_t selected_mode);
+static bool trackModeUsesBallLapProfile(uint8_t selected_mode);
 static bool trackFinishLineDetected(float distance_m);
 static void trackRunRequirement2(uint32_t now_tick, float dt_s);
 static void trackRunRequirement4(uint32_t now_tick, float dt_s);
@@ -39,9 +44,10 @@ static void trackRunRequirement5Or6(uint32_t now_tick, float dt_s);
 static void trackCaptureTelemetry(uint32_t now_tick);
 static void trackStart(uint32_t start_tick);
 static void trackStop(uint32_t stop_tick);
-static float trackCalculateForwardSpeed(float remaining_distance_m);
+static bool trackOnlyTestModeActive(void);
 static float trackLimitForwardSpeed(float requested_speed_mps);
 static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s);
+static float trackWrapAngleRad(float angle_rad);
 static void trackInit(void);
 static void ledInit(void);
 static void oledInit(void);
@@ -52,7 +58,10 @@ static void motorInit(void);
 static void pidInit(void);
 static void wheelInit(void);
 static void chassisInit(void);
+static void ballControlInit(void);
 static void gpioInterruptDispatch(GPIO_TypeDef *GPIOx);
+
+static void zdt42Init(void);
 /***********************************/
 
 /******** 线程句柄和属性 ********/
@@ -88,10 +97,27 @@ const osThreadAttr_t imu0Task_attributes = {
 };
 
 osThreadId_t trackTaskHandle;
+static StaticTask_t trackTaskControlBlock;
+static StackType_t trackTaskStack[256];
 const osThreadAttr_t trackTask_attributes = {
   .name = "trackTask",
-  .stack_size = 128 * 4,
+  .cb_mem = &trackTaskControlBlock,
+  .cb_size = sizeof(trackTaskControlBlock),
+  .stack_mem = trackTaskStack,
+  .stack_size = sizeof(trackTaskStack),
   .priority = (osPriority_t) osPriorityHigh,
+};
+
+static StaticTask_t ballHostControlTaskControlBlock;
+static StackType_t ballHostControlTaskStack[256];
+osThreadId_t ballHostControlTaskHandle;
+const osThreadAttr_t ballHostControlTask_attributes = {
+  .name = "ballControlTask",
+  .cb_mem = &ballHostControlTaskControlBlock,
+  .cb_size = sizeof(ballHostControlTaskControlBlock),
+  .stack_mem = ballHostControlTaskStack,
+  .stack_size = sizeof(ballHostControlTaskStack),
+  .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /*******************************/
 
@@ -127,6 +153,10 @@ static UART_HandleTypeDef huart_imu0 = {
     .Instance = UART_IMU0_INST,
 };
 
+static UART_HandleTypeDef huart_hc12 = {
+    .Instance = UART_HC12_INST,
+};
+
 Pid_t wheel_left_pid  = { PID_OBJECT_DEFAULT };
 Pid_t wheel_right_pid = { PID_OBJECT_DEFAULT };
 
@@ -134,6 +164,11 @@ Wheel_t wheel_left  = { WHEEL_OBJECT_DEFAULT };
 Wheel_t wheel_right = { WHEEL_OBJECT_DEFAULT };
 
 Chassis_t chassis = { CHASSIS_OBJECT_DEFAULT };
+
+Zdt42_t zdt42_motor = { ZDT42_OBJECT_DEFAULT };
+BallControl_t ball_control = { BALL_CONTROL_OBJECT_DEFAULT };
+Slaver_t ball_position_receiver = { SLAVER_OBJECT_DEFAULT };
+static SlaverSimpleFloatProtocol_t ball_position_protocol;
 
 static ImuMahonyConfig_t imu0_mahony_config = {
     .sample_period_s = 0.008f,
@@ -172,26 +207,45 @@ Imu_t imu0 = {
 };
 
 float ball_target = 0.0f;
-float ball_real   = 10.0f;
+float ball_real   = 0.0f;
 
+float target_5cm  = 5.0f;
+float target_f5cm = -5.0f;
+
+#define ROBOT_MODE_REQUIREMENT_3          3U
 #define ROBOT_MODE_REQUIREMENT_2          2U
 #define ROBOT_MODE_REQUIREMENT_4          4U
 #define ROBOT_MODE_REQUIREMENT_5          5U
 #define ROBOT_MODE_REQUIREMENT_6          6U
-#define TRACK_USE_SMALL_TEST_MAP          1U
+#define ZDT42_BALL_MOTOR_ID               1U
+#define TRACK_USE_SMALL_TEST_MAP          0U
 #if TRACK_USE_SMALL_TEST_MAP
 #define TRACK_LAP_DISTANCE_M              3.75f
 #define TRACK_FINISH_ARM_DISTANCE_M       3.50f
 #else
 #define TRACK_LAP_DISTANCE_M              (3.0f + 3.14159265f)
-#define TRACK_FINISH_ARM_DISTANCE_M       5.5f
+#define TRACK_FINISH_ARM_DISTANCE_M       5.25f
 #endif
 #define TRACK_POSITION_TOLERANCE_M        0.02f
 #define TRACK_POSITION_KP                 1.0f
-#define TRACK_FINISH_LINE_LEFT_MASK       0x1CU
-#define TRACK_FINISH_LINE_RIGHT_MASK      0x38U
+#define TRACK_FINISH_LINE_LEFT_SUPPORT_MASK  0x0CU
+#define TRACK_FINISH_LINE_RIGHT_SUPPORT_MASK 0x30U
 #define TRACK_FINISH_LINE_ARM_TIME_MS     2000U
 #define TRACK_FINISH_LINE_CONFIRM_SAMPLES 6U
+#define TRACK_FINISH_LINE_PRIMARY_SCORE   3U
+#define TRACK_FINISH_LINE_SUPPORT_SCORE   1U
+#define TRACK_FINISH_LINE_SUPPORT_ONLY_SCORE 12U
+#define TRACK_FINISH_LINE_MAX_SCORE       12U
+#define TRACK_FINISH_ALIGN_HEADING_KP        1.50f
+#define TRACK_FINISH_ALIGN_HEADING_TOLERANCE_RAD 0.026f
+#define TRACK_FINISH_ALIGN_MAX_ROTATION_RAD  0.262f
+#define TRACK_FINISH_ALIGN_MAX_TIME_MS     1500U
+#define TRACK_FINISH_ALIGN_CONFIRM_SAMPLES 20U
+#define TRACK_FINISH_ALIGN_MIN_TURN_SPEED  0.10f
+#define TRACK_FINISH_ALIGN_MAX_TURN_SPEED  0.35f
+#define TRACK_FINISH_REVERSE_DISTANCE_M    0.020f
+#define TRACK_FINISH_REVERSE_SPEED_MPS     0.10f
+#define TRACK_FINISH_REVERSE_MAX_TIME_MS   800U
 #define TRACK_MAX_RUN_TIME_MS             20000U
 #define REQUIREMENT4_AB_DISTANCE_M        1.5f
 #define REQUIREMENT4_FORWARD_SPEED_MPS    0.35f
@@ -202,23 +256,43 @@ float ball_real   = 10.0f;
 #define KEY_A07_DEBOUNCE_MS               50U
 #define OLED_COUNTER_INTERVAL_MS           1000U
 #define TRACK_CONTROL_DT_S                 0.005f
-#define TRACK_TELEMETRY_CAPACITY           1600U
-#define TRACK_TELEMETRY_PERIOD_MS          10U
+#define TRACK_TELEMETRY_CAPACITY            800U
+#define TRACK_TELEMETRY_PERIOD_MS           40U
 #define TRACK_TELEMETRY_START_DELAY_MS        0U
-#define TRACK_CORNER_EXIT_HOLD_MS          600U
+#define TRACK_CORNER_EXIT_HOLD_MS          350U
 #define TRACK_FORWARD_ACCEL_MPS2           1.10f
 #define TRACK_FORWARD_DECEL_MPS2           3.50f
 #define TRACK_AGGRESSIVE_MAX_TURN_SPEED     0.72f
-#define TRACK_RECOVERY_MAX_TURN_SPEED       0.85f
+#define TRACK_RECOVERY_MAX_TURN_SPEED       0.72f
 #define TRACK_LARGE_ERROR_TURN_GAIN          1.25f
+#define TRACK_MODE2_TRANSIENT_LOSS_TIME_S     0.16f
+#define TRACK_MODE2_TRANSIENT_LOSS_SPEED_SCALE 0.90f
+#define TRACK_MODE2_LOST_LINE_SPEED_SCALE    0.45f
+#define TRACK_MODE2_OUTER_SENSOR_SPEED_SCALE 0.30f
+#define TRACK_MODE2_LARGE_ERROR_SPEED_SCALE  0.42f
+#define TRACK_MODE2_CORNER_HOLD_SPEED_SCALE  0.48f
+#define TRACK_MODE2_FINISH_APPROACH_SPEED_MPS 0.16f
 #define TRACK_STABLE_BASE_SPEED_MPS         0.45f
-#define TRACK_STABLE_MAX_TURN_SPEED         0.60f
 #define TRACK_STABLE_FORWARD_ACCEL_MPS2     0.60f
 #define TRACK_STABLE_FORWARD_DECEL_MPS2     0.90f
+#define TRACK_STABLE_SOFT_START_MS          2000U
 #define TRACK_STABLE_MAX_RUN_TIME_MS       30000U
+#define TRACK_BALL_LAP_BASE_SPEED_MPS       0.30f
+#define TRACK_BALL_LAP_MAX_TURN_SPEED       0.75f
+#define TRACK_BALL_LAP_TURN_GAIN             1.20f
+#define TRACK_BALL_LAP_FORWARD_ACCEL_MPS2   0.25f
+#define TRACK_BALL_LAP_FORWARD_DECEL_MPS2   0.25f
+#define BALL_HOST_FRAME_HEADER              0xA5U
+#define BALL_HOST_FRAME_TAIL                0x5AU
+#define BALL_HOST_FRAME_LENGTH              7U
+#define BALL_HOST_RX_BUFFER_SIZE             64U
+#define BALL_CONTROL_TASK_PERIOD_MS          10U
+/* Set to 1 only while verifying chassis line following without the ball
+ * balancing assembly powered. Requirement 3 always retains ball control. */
+#define TRACK_ONLY_TEST_MODE                  1U
 /*
 TRACK_LAP_DISTANCE_M：跑一圈的目标距离，当前约 6.1416m。
-TRACK_FINISH_ARM_DISTANCE_M：行驶超过 5.5m 后，才允许识别 A 点终点黑线，避免刚启动就误判。
+TRACK_FINISH_ARM_DISTANCE_M：接近一圈末段后，才允许识别 A 点终点黑线，避免刚启动就误判。
 TRACK_POSITION_TOLERANCE_M：停车位置允许误差，当前 0.02m，即题目要求的 2cm。
 TRACK_POSITION_KP：位置环 P 参数。增大后接近终点时速度更高，但容易冲过；减小后减速更早、更平稳。
 TRACK_FINISH_LINE_MIN_BLACK_COUNT：至少多少路灰度传感器检测到黑色，才认为到达终点线。
@@ -231,6 +305,8 @@ volatile uint8_t mode = ROBOT_MODE_REQUIREMENT_2;
 volatile uint32_t oled_refresh_error_count = 0U;
 volatile uint32_t oled_recovery_count = 0U;
 volatile uint32_t imu0_init_error = 0U;
+volatile uint32_t ball_control_init_error = 0U;
+volatile uint32_t ball_host_init_error = 0U;
 static uint32_t oled_default_counter = 0U;
 static uint8_t requirement4_curve_detect_count = 0U;
 volatile uint8_t track_finish_line_detect_count = 0U;
@@ -238,7 +314,20 @@ volatile uint8_t track_finish_last_mask = 0U;
 volatile uint8_t track_finish_last_raw_count = 0U;
 volatile uint32_t track_finish_pattern_hit_count = 0U;
 volatile uint32_t track_finish_trigger_count = 0U;
+volatile uint32_t track_finish_three_channel_hit_count = 0U;
+volatile uint32_t track_finish_two_channel_hit_count = 0U;
+volatile float track_finish_trigger_distance_m = 0.0f;
+volatile float track_stop_distance_m = 0.0f;
 volatile uint8_t track_stop_reason = 0U;
+volatile bool track_finish_three_channel_seen = false;
+volatile bool track_finish_align_active = false;
+volatile uint8_t track_finish_align_settle_count = 0U;
+volatile float track_finish_align_start_turn_angle_rad = 0.0f;
+volatile float track_finish_align_error_rad = 0.0f;
+volatile uint32_t track_finish_align_start_tick = 0U;
+volatile bool track_finish_reverse_active = false;
+volatile float track_finish_reverse_start_distance_m = 0.0f;
+volatile uint32_t track_finish_reverse_start_tick = 0U;
 
 typedef struct
 {
@@ -259,10 +348,12 @@ volatile uint32_t track_telemetry_last_tick = 0U;
 static volatile bool ball_menu_active = false;
 static volatile bool track_running = false;
 static volatile bool track_start_requested = false;
+static volatile bool track_stop_requested = false;
 static volatile uint32_t track_start_request_tick = 0U;
 static volatile uint32_t track_start_tick = 0U;
 static volatile uint32_t track_elapsed_ms = 0U;
 static volatile uint32_t track_total_time_ms = 0U;
+static volatile bool track_timer_stopped = true;
 static uint32_t track_slow_until_tick = 0U;
 static float track_forward_speed_command = 0.0f;
 static bool key1_sample_pressed = false;
@@ -286,24 +377,27 @@ void robotInit(void)
     pidInit();
     wheelInit();
     chassisInit();
+    zdt42Init();
+    ballControlInit();
     chassisControlTaskHandle = osThreadNew(chassisControlTask, NULL, &chassisControlTask_attributes);
     oledTaskHandle = osThreadNew(oledTask, NULL, &oledTask_attributes);
     imu0TaskHandle = osThreadNew(imuParseTask, &imu0, &imu0Task_attributes);
     trackTaskHandle = osThreadNew(trackTask, NULL, &trackTask_attributes);
+    ballHostControlTaskHandle =
+        osThreadNew(ballHostControlTask, NULL,
+                    &ballHostControlTask_attributes);
     configASSERT(chassisControlTaskHandle != NULL);
     configASSERT(oledTaskHandle != NULL);
     configASSERT(imu0TaskHandle != NULL);
     configASSERT(trackTaskHandle != NULL);
+    configASSERT(ballHostControlTaskHandle != NULL);
 }
 
 static void chassisControlTask(void *argument)
 {
     (void)argument;
-
-    //chassis.set_velocity(&chassis, 0.03f, 0.00f);
     while (1)
     {
- 
         chassis.update(&chassis,0.005f);
         osDelay(5);
     }
@@ -355,6 +449,7 @@ static void oledTask(void *argument)
 
 static void oledDrawDefaultPage(void)
 {
+    BallControlData_t ball_data;
     ImuData_t imu_data;
     uint32_t display_time_ms;
     bool running;
@@ -364,12 +459,25 @@ static void oledDrawDefaultPage(void)
     running = track_running;
     display_time_ms = running ? track_elapsed_ms : track_total_time_ms;
     taskEXIT_CRITICAL();
+    if (mode == ROBOT_MODE_REQUIREMENT_3)
+    {
+        ball_control.get_data(&ball_control, &ball_data);
+    }
 
     oled.draw_string(&oled, 0, 0, "mode:", OLED_COLOR_WHITE);
     oled.draw_int(&oled, 5, 0, mode, OLED_COLOR_WHITE);
     if (trackModeIsSupported(mode))
     {
-        if (mode == ROBOT_MODE_REQUIREMENT_4)
+        if (mode == ROBOT_MODE_REQUIREMENT_3)
+            oled.draw_string(&oled, 0, 2,
+                             ball_data.sequence_complete ? "R3:DONE" :
+                             (running ? "R3:RUN" : "R3:STOP"),
+                             OLED_COLOR_WHITE);
+        else if (trackOnlyTestModeActive())
+            oled.draw_string(&oled, 0, 2,
+                             running ? "TRK:RUN" : "TRK:STOP",
+                             OLED_COLOR_WHITE);
+        else if (mode == ROBOT_MODE_REQUIREMENT_4)
             oled.draw_string(&oled, 0, 2,
                              running ? "R4:RUN" : "R4:STOP",
                              OLED_COLOR_WHITE);
@@ -398,13 +506,17 @@ static void oledDrawDefaultPage(void)
 
 static void oledDrawBallPage(void)
 {
+    BallControlData_t control_data;
     float target;
     float real;
 
+    ball_control.get_data(&ball_control, &control_data);
     taskENTER_CRITICAL();
     target = ball_target;
     real = ball_real;
     taskEXIT_CRITICAL();
+    if (control_data.state != BALL_CONTROL_IDLE)
+        target = control_data.target_cm;
 
     oled.draw_string(&oled, 0, 0, "BALL MENU", OLED_COLOR_WHITE);
     oled.draw_string(&oled, 0, 2, "target:", OLED_COLOR_WHITE);
@@ -455,22 +567,107 @@ static void imuParseTask(void *argument)
     }
 }
 
+static void ballHostControlTask(void *argument)
+{
+    const SlaverSimpleFloatProtocolConfig_t protocol_config = {
+        .frame_header = BALL_HOST_FRAME_HEADER,
+        .frame_tail = BALL_HOST_FRAME_TAIL,
+        .frame_length = BALL_HOST_FRAME_LENGTH,
+    };
+    const SlaverInitConfig_t receiver_config = {
+        .uart_handle = &huart_hc12,
+        .dma_config = {
+            .dma = DMA,
+            .rx_channel = DMA_CH_HC12_RX_CHAN_ID,
+            .tx_channel = USART_DMA_CHANNEL_INVALID,
+        },
+        .uart_irqn = UART_HC12_INST_INT_IRQN,
+        .uart_irq_priority = 2U,
+        .dma_rx_buffer_size = BALL_HOST_RX_BUFFER_SIZE,
+        .header = {BALL_HOST_FRAME_HEADER},
+        .header_length = 1U,
+        .frame_length_callback = SlaverSimpleFloatFrameLength,
+        .frame_validate_callback = SlaverSimpleFloatFrameValidate,
+        .frame_callback = SlaverSimpleFloatFrameReceived,
+        .protocol_context = &ball_position_protocol,
+        .tx_timeout_ms = 100U,
+    };
+    SlaverSimpleFloatData_t latest;
+    uint32_t handled_update_count = 0U;
+    float requested_target;
+
+    (void)argument;
+    if (!SlaverSimpleFloatProtocolInit(&ball_position_protocol,
+                                       &protocol_config))
+    {
+        ball_host_init_error = 1U;
+        vTaskDelete(NULL);
+        return;
+    }
+    if (!ball_position_receiver.init(&ball_position_receiver,
+                                     &receiver_config))
+    {
+        ball_host_init_error = 2U;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    for (;;)
+    {
+        ball_position_receiver.process(&ball_position_receiver);
+        SlaverSimpleFloatGetLatest(&ball_position_protocol, &latest);
+        if (latest.valid &&
+            (latest.update_count != handled_update_count))
+        {
+            handled_update_count = latest.update_count;
+            taskENTER_CRITICAL();
+            ball_real = latest.value;
+            taskEXIT_CRITICAL();
+            ball_control.set_measurement(&ball_control,
+                                         latest.value,
+                                         latest.last_update_tick);
+        }
+
+        if ((mode == ROBOT_MODE_REQUIREMENT_4) ||
+            (mode == ROBOT_MODE_REQUIREMENT_5) ||
+            (mode == ROBOT_MODE_REQUIREMENT_6))
+        {
+            taskENTER_CRITICAL();
+            requested_target = ball_target;
+            taskEXIT_CRITICAL();
+            ball_control.set_target(&ball_control, requested_target);
+        }
+
+        ball_control.update(&ball_control, HAL_GetTick());
+        osDelay(BALL_CONTROL_TASK_PERIOD_MS);
+    }
+}
+
 static void trackTask(void *argument)
 {
+    BallControlData_t ball_data;
     uint32_t now_tick;
     uint32_t requested_start_tick;
     uint32_t last_control_tick = 0U;
     float control_dt_s;
     (void)argument;
     bool start_requested;
+    bool stop_requested;
 
     for (;;)
     {
         start_requested = false;
+        stop_requested = false;
         requested_start_tick = 0U;
         if (trackModeIsSupported(mode))
         {
             taskENTER_CRITICAL();
+            if (track_stop_requested)
+            {
+                stop_requested = true;
+                track_stop_requested = false;
+                track_start_requested = false;
+            }
             if (track_start_requested)
             {
                 start_requested = true;
@@ -479,14 +676,52 @@ static void trackTask(void *argument)
             }
             taskEXIT_CRITICAL();
 
-            if (start_requested && !track_running)
+            if (stop_requested && track_running)
+                trackStop(HAL_GetTick());
+            else if (start_requested && !track_running)
                 trackStart(requested_start_tick);
         }
 
         if (track_running)
         {
             now_tick = HAL_GetTick();
-            track_elapsed_ms = now_tick - track_start_tick;
+            if (!track_timer_stopped)
+                track_elapsed_ms = now_tick - track_start_tick;
+            if ((mode == ROBOT_MODE_REQUIREMENT_3) ||
+                (!trackOnlyTestModeActive() &&
+                 ((mode == ROBOT_MODE_REQUIREMENT_4) ||
+                  (mode == ROBOT_MODE_REQUIREMENT_5) ||
+                  (mode == ROBOT_MODE_REQUIREMENT_6))))
+            {
+                ball_control.get_data(&ball_control, &ball_data);
+                if (ball_data.state == BALL_CONTROL_FAULT)
+                {
+                    track_stop_reason = 4U;
+                    trackStop(now_tick);
+                    osDelay(5);
+                    continue;
+                }
+                if ((mode == ROBOT_MODE_REQUIREMENT_3) &&
+                    ball_data.sequence_complete &&
+                    (!track_timer_stopped))
+                {
+                    taskENTER_CRITICAL();
+                    track_elapsed_ms = ball_data.completion_time_ms;
+                    track_total_time_ms = ball_data.completion_time_ms;
+                    track_timer_stopped = true;
+                    taskEXIT_CRITICAL();
+                }
+                if ((mode != ROBOT_MODE_REQUIREMENT_3) &&
+                    ((ball_data.state != BALL_CONTROL_ACTIVE) ||
+                     (!ball_data.measurement_valid) ||
+                     ball_data.measurement_stale))
+                {
+                    track_forward_speed_command = 0.0f;
+                    chassis.set_velocity(&chassis, 0.0f, 0.0f);
+                    osDelay(5);
+                    continue;
+                }
+            }
             if ((last_control_tick == 0U) || (now_tick <= last_control_tick))
             {
                 control_dt_s = TRACK_CONTROL_DT_S;
@@ -501,7 +736,9 @@ static void trackTask(void *argument)
                     control_dt_s = 0.05f;
             }
             last_control_tick = now_tick;
-            if (mode == ROBOT_MODE_REQUIREMENT_2)
+            if (mode == ROBOT_MODE_REQUIREMENT_3)
+                chassis.set_velocity(&chassis, 0.0f, 0.0f);
+            else if (mode == ROBOT_MODE_REQUIREMENT_2)
                 trackRunRequirement2(now_tick, control_dt_s);
             else if (mode == ROBOT_MODE_REQUIREMENT_4)
                 trackRunRequirement4(now_tick, control_dt_s);
@@ -523,6 +760,7 @@ static void trackTask(void *argument)
 static bool trackModeIsSupported(uint8_t selected_mode)
 {
     return (selected_mode == ROBOT_MODE_REQUIREMENT_2) ||
+           (selected_mode == ROBOT_MODE_REQUIREMENT_3) ||
            (selected_mode == ROBOT_MODE_REQUIREMENT_4) ||
            (selected_mode == ROBOT_MODE_REQUIREMENT_5) ||
            (selected_mode == ROBOT_MODE_REQUIREMENT_6);
@@ -535,12 +773,27 @@ static bool trackModeUsesStableProfile(uint8_t selected_mode)
            (selected_mode == ROBOT_MODE_REQUIREMENT_6);
 }
 
+static bool trackModeUsesBallLapProfile(uint8_t selected_mode)
+{
+    return (selected_mode == ROBOT_MODE_REQUIREMENT_5) ||
+           (selected_mode == ROBOT_MODE_REQUIREMENT_6);
+}
+
+static bool trackOnlyTestModeActive(void)
+{
+    return (TRACK_ONLY_TEST_MODE != 0U) &&
+           ((mode == ROBOT_MODE_REQUIREMENT_4) ||
+            (mode == ROBOT_MODE_REQUIREMENT_5) ||
+            (mode == ROBOT_MODE_REQUIREMENT_6));
+}
+
 static bool trackFinishLineDetected(float distance_m)
 {
     uint32_t mask = track.data.black_mask & 0xFFU;
     uint8_t raw_black_count = 0U;
     uint8_t channel;
     bool center_pattern_detected;
+    bool support_pattern_detected;
     bool pattern_detected;
 
     for (channel = 0U; channel < 8U; ++channel)
@@ -550,11 +803,14 @@ static bool trackFinishLineDetected(float distance_m)
     }
 
     center_pattern_detected =
-        ((mask & TRACK_FINISH_LINE_LEFT_MASK) ==
-         TRACK_FINISH_LINE_LEFT_MASK) ||
-        ((mask & TRACK_FINISH_LINE_RIGHT_MASK) ==
-         TRACK_FINISH_LINE_RIGHT_MASK);
-    pattern_detected = center_pattern_detected;
+        (mask & (mask >> 1U) & (mask >> 2U)) != 0U;
+    support_pattern_detected =
+        ((mask & TRACK_FINISH_LINE_LEFT_SUPPORT_MASK) ==
+         TRACK_FINISH_LINE_LEFT_SUPPORT_MASK) ||
+        ((mask & TRACK_FINISH_LINE_RIGHT_SUPPORT_MASK) ==
+         TRACK_FINISH_LINE_RIGHT_SUPPORT_MASK);
+    pattern_detected =
+        center_pattern_detected || support_pattern_detected;
     track_finish_last_mask = (uint8_t)mask;
     track_finish_last_raw_count = raw_black_count;
 
@@ -563,17 +819,43 @@ static bool trackFinishLineDetected(float distance_m)
         pattern_detected)
     {
         track_finish_pattern_hit_count++;
-        if (track_finish_line_detect_count <
-            TRACK_FINISH_LINE_CONFIRM_SAMPLES)
-            track_finish_line_detect_count++;
+        if (center_pattern_detected)
+        {
+            track_finish_three_channel_hit_count++;
+            track_finish_three_channel_seen = true;
+            if (track_finish_line_detect_count <=
+                (TRACK_FINISH_LINE_MAX_SCORE -
+                 TRACK_FINISH_LINE_PRIMARY_SCORE))
+            {
+                track_finish_line_detect_count +=
+                    TRACK_FINISH_LINE_PRIMARY_SCORE;
+            }
+            else
+            {
+                track_finish_line_detect_count =
+                    TRACK_FINISH_LINE_MAX_SCORE;
+            }
+        }
+        else if (track_finish_line_detect_count <
+                 TRACK_FINISH_LINE_MAX_SCORE)
+        {
+            track_finish_two_channel_hit_count++;
+            track_finish_line_detect_count +=
+                TRACK_FINISH_LINE_SUPPORT_SCORE;
+        }
     }
-    else
+    else if (track_finish_line_detect_count > 0U)
     {
-        track_finish_line_detect_count = 0U;
+        track_finish_line_detect_count--;
+        if (track_finish_line_detect_count == 0U)
+            track_finish_three_channel_seen = false;
     }
 
-    if (track_finish_line_detect_count >=
-        TRACK_FINISH_LINE_CONFIRM_SAMPLES)
+    if (((track_finish_line_detect_count >=
+          TRACK_FINISH_LINE_CONFIRM_SAMPLES) &&
+         track_finish_three_channel_seen) ||
+        (track_finish_line_detect_count >=
+         TRACK_FINISH_LINE_SUPPORT_ONLY_SCORE))
     {
         track_finish_trigger_count++;
         return true;
@@ -617,12 +899,101 @@ static void trackRunRequirement2(uint32_t now_tick, float dt_s)
     distance_m = (chassis_data.distance_m >= 0.0f) ?
                  chassis_data.distance_m : -chassis_data.distance_m;
     remaining_distance_m = TRACK_LAP_DISTANCE_M - distance_m;
+
+    if (track_finish_reverse_active)
+    {
+        float reverse_distance_m =
+            track_finish_reverse_start_distance_m -
+            chassis_data.distance_m;
+
+        if ((reverse_distance_m >= TRACK_FINISH_REVERSE_DISTANCE_M) ||
+            ((now_tick - track_finish_reverse_start_tick) >=
+             TRACK_FINISH_REVERSE_MAX_TIME_MS))
+        {
+            trackStop(now_tick);
+        }
+        else
+        {
+            chassis.set_velocity(
+                &chassis,
+                -TRACK_FINISH_REVERSE_SPEED_MPS,
+                0.0f);
+            trackCaptureTelemetry(now_tick);
+        }
+        return;
+    }
+
     finish_line_detected = trackFinishLineDetected(distance_m);
 
-    if (finish_line_detected)
+    if ((!track_finish_align_active) && finish_line_detected)
     {
         track_stop_reason = 1U;
-        trackStop(now_tick);
+        track_finish_trigger_distance_m = distance_m;
+        track_finish_align_active = true;
+        track_finish_align_settle_count = 0U;
+        track_finish_align_start_turn_angle_rad =
+            chassis_data.turn_angle_rad;
+        track_finish_align_error_rad = 0.0f;
+        track_finish_align_start_tick = now_tick;
+        track.pid.reset(&track.pid);
+    }
+
+    if (track_finish_align_active)
+    {
+        float rotation_from_stop_rad;
+
+        track_finish_align_error_rad = -trackWrapAngleRad(
+            chassis_data.turn_angle_rad);
+        rotation_from_stop_rad = trackWrapAngleRad(
+            chassis_data.turn_angle_rad -
+            track_finish_align_start_turn_angle_rad);
+        absolute_error = track_finish_align_error_rad;
+        if (absolute_error < 0.0f)
+            absolute_error = -absolute_error;
+        if (absolute_error <= TRACK_FINISH_ALIGN_HEADING_TOLERANCE_RAD)
+        {
+            if (track_finish_align_settle_count <
+                TRACK_FINISH_ALIGN_CONFIRM_SAMPLES)
+            {
+                track_finish_align_settle_count++;
+            }
+        }
+        else
+        {
+            track_finish_align_settle_count = 0U;
+        }
+
+        if ((track_finish_align_settle_count >=
+             TRACK_FINISH_ALIGN_CONFIRM_SAMPLES) ||
+            ((rotation_from_stop_rad >= TRACK_FINISH_ALIGN_MAX_ROTATION_RAD) ||
+             (rotation_from_stop_rad <= -TRACK_FINISH_ALIGN_MAX_ROTATION_RAD)) ||
+            ((now_tick - track_finish_align_start_tick) >=
+             TRACK_FINISH_ALIGN_MAX_TIME_MS))
+        {
+            chassis.set_velocity(&chassis, 0.0f, 0.0f);
+            track_finish_align_active = false;
+            track_finish_reverse_active = true;
+            track_finish_reverse_start_distance_m =
+                chassis_data.distance_m;
+            track_finish_reverse_start_tick = now_tick;
+        }
+        else
+        {
+            turn_speed = TRACK_FINISH_ALIGN_HEADING_KP *
+                         track_finish_align_error_rad;
+            if (turn_speed > TRACK_FINISH_ALIGN_MAX_TURN_SPEED)
+                turn_speed = TRACK_FINISH_ALIGN_MAX_TURN_SPEED;
+            else if (turn_speed < -TRACK_FINISH_ALIGN_MAX_TURN_SPEED)
+                turn_speed = -TRACK_FINISH_ALIGN_MAX_TURN_SPEED;
+            if ((turn_speed > -TRACK_FINISH_ALIGN_MIN_TURN_SPEED) &&
+                (turn_speed < TRACK_FINISH_ALIGN_MIN_TURN_SPEED))
+            {
+                turn_speed = track_finish_align_error_rad < 0.0f ?
+                             -TRACK_FINISH_ALIGN_MIN_TURN_SPEED :
+                             TRACK_FINISH_ALIGN_MIN_TURN_SPEED;
+            }
+            chassis.set_velocity(&chassis, 0.0f, turn_speed);
+        }
     }
     else if (remaining_distance_m <= TRACK_POSITION_TOLERANCE_M)
     {
@@ -636,8 +1007,13 @@ static void trackRunRequirement2(uint32_t now_tick, float dt_s)
     }
     else
     {
-        forward_speed = trackCalculateForwardSpeed(remaining_distance_m);
+        forward_speed = track.init_config.base_speed;
         forward_speed = trackLimitForwardSpeed(forward_speed);
+        if ((distance_m >= TRACK_FINISH_ARM_DISTANCE_M) &&
+            (forward_speed > TRACK_MODE2_FINISH_APPROACH_SPEED_MPS))
+        {
+            forward_speed = TRACK_MODE2_FINISH_APPROACH_SPEED_MPS;
+        }
         forward_speed = trackSmoothForwardSpeed(forward_speed, dt_s);
         chassis.set_velocity(&chassis, forward_speed, -turn_speed);
         trackCaptureTelemetry(now_tick);
@@ -705,41 +1081,29 @@ static void trackRunRequirement5Or6(uint32_t now_tick, float dt_s)
 {
     ChassisData_t chassis_data;
     float distance_m;
-    float remaining_distance_m;
     float forward_speed;
     float turn_speed;
-    bool finish_line_detected;
 
     turn_speed = track.update(&track, dt_s);
-    if (turn_speed > TRACK_STABLE_MAX_TURN_SPEED)
-        turn_speed = TRACK_STABLE_MAX_TURN_SPEED;
-    else if (turn_speed < -TRACK_STABLE_MAX_TURN_SPEED)
-        turn_speed = -TRACK_STABLE_MAX_TURN_SPEED;
+    turn_speed *= TRACK_BALL_LAP_TURN_GAIN;
+    if (turn_speed > TRACK_BALL_LAP_MAX_TURN_SPEED)
+        turn_speed = TRACK_BALL_LAP_MAX_TURN_SPEED;
+    else if (turn_speed < -TRACK_BALL_LAP_MAX_TURN_SPEED)
+        turn_speed = -TRACK_BALL_LAP_MAX_TURN_SPEED;
 
     chassis.get_data(&chassis, &chassis_data);
     distance_m = (chassis_data.distance_m >= 0.0f) ?
                  chassis_data.distance_m : -chassis_data.distance_m;
-    remaining_distance_m = TRACK_LAP_DISTANCE_M - distance_m;
-    finish_line_detected = trackFinishLineDetected(distance_m);
+    (void)trackFinishLineDetected(distance_m);
 
-    if (finish_line_detected)
-    {
-        track_stop_reason = 1U;
-        trackStop(now_tick);
-    }
-    else if (remaining_distance_m <= TRACK_POSITION_TOLERANCE_M)
-    {
-        track_stop_reason = 2U;
-        trackStop(now_tick);
-    }
-    else if (track_elapsed_ms >= TRACK_STABLE_MAX_RUN_TIME_MS)
+    if (track_elapsed_ms >= TRACK_STABLE_MAX_RUN_TIME_MS)
     {
         track_stop_reason = 3U;
         trackStop(now_tick);
     }
     else
     {
-        forward_speed = trackCalculateForwardSpeed(remaining_distance_m);
+        forward_speed = TRACK_BALL_LAP_BASE_SPEED_MPS;
         forward_speed = trackLimitForwardSpeed(forward_speed);
         forward_speed = trackSmoothForwardSpeed(forward_speed, dt_s);
         chassis.set_velocity(&chassis, forward_speed, -turn_speed);
@@ -778,12 +1142,18 @@ static void trackCaptureTelemetry(uint32_t now_tick)
 
 static void trackStart(uint32_t start_tick)
 {
+    float requested_ball_target = 0.0f;
+    bool ball_start_ok = true;
+
     chassis.set_velocity(&chassis, 0.0f, 0.0f);
     chassis.reset_odometry(&chassis);
     track.pid.reset(&track.pid);
+    taskENTER_CRITICAL();
     track_start_tick = start_tick;
     track_elapsed_ms = 0U;
     track_total_time_ms = 0U;
+    track_timer_stopped = false;
+    taskEXIT_CRITICAL();
     track_slow_until_tick = start_tick;
     track_forward_speed_command = 0.0f;
     requirement4_curve_detect_count = 0U;
@@ -792,41 +1162,90 @@ static void trackStart(uint32_t start_tick)
     track_finish_last_raw_count = 0U;
     track_finish_pattern_hit_count = 0U;
     track_finish_trigger_count = 0U;
+    track_finish_three_channel_hit_count = 0U;
+    track_finish_two_channel_hit_count = 0U;
+    track_finish_trigger_distance_m = 0.0f;
+    track_stop_distance_m = 0.0f;
+    track_finish_three_channel_seen = false;
     track_stop_reason = 0U;
+    track_finish_align_active = false;
+    track_finish_align_settle_count = 0U;
+    track_finish_align_start_turn_angle_rad = 0.0f;
+    track_finish_align_error_rad = 0.0f;
+    track_finish_align_start_tick = 0U;
+    track_finish_reverse_active = false;
+    track_finish_reverse_start_distance_m = 0.0f;
+    track_finish_reverse_start_tick = 0U;
     track_telemetry_write_count = 0U;
     track_telemetry_last_tick =
         start_tick + TRACK_TELEMETRY_START_DELAY_MS -
         TRACK_TELEMETRY_PERIOD_MS;
+
+    if (mode == ROBOT_MODE_REQUIREMENT_3)
+    {
+        ball_start_ok = ball_control.start(
+            &ball_control,
+            BALL_PROFILE_REQUIREMENT3,
+            0.0f,
+            target_5cm,
+            target_f5cm,
+            start_tick);
+    }
+    else if (!trackOnlyTestModeActive() &&
+             ((mode == ROBOT_MODE_REQUIREMENT_4) ||
+              (mode == ROBOT_MODE_REQUIREMENT_5) ||
+              (mode == ROBOT_MODE_REQUIREMENT_6)))
+    {
+        taskENTER_CRITICAL();
+        requested_ball_target = ball_target;
+        taskEXIT_CRITICAL();
+        ball_start_ok = ball_control.start(
+            &ball_control,
+            BALL_PROFILE_HOLD,
+            requested_ball_target,
+            target_5cm,
+            target_f5cm,
+            start_tick);
+    }
+
+    if (!ball_start_ok)
+    {
+        track_timer_stopped = true;
+        ball_control_init_error = 2U;
+        led_red.off(&led_red);
+        return;
+    }
+
     track_running = true;
     led_red.on(&led_red);
 }
 
 static void trackStop(uint32_t stop_tick)
 {
+    ChassisData_t chassis_data;
+
     chassis.set_velocity(&chassis, 0.0f, 0.0f);
+    chassis.get_data(&chassis, &chassis_data);
+    track_stop_distance_m = chassis_data.distance_m;
+    if ((mode == ROBOT_MODE_REQUIREMENT_3) ||
+        (!trackOnlyTestModeActive() &&
+         ((mode == ROBOT_MODE_REQUIREMENT_4) ||
+          (mode == ROBOT_MODE_REQUIREMENT_5) ||
+          (mode == ROBOT_MODE_REQUIREMENT_6))))
+    {
+        ball_control.stop(&ball_control);
+    }
     trackCaptureTelemetry(stop_tick);
     track.pid.reset(&track.pid);
     track_forward_speed_command = 0.0f;
-    track_elapsed_ms = stop_tick - track_start_tick;
+    taskENTER_CRITICAL();
+    if (!track_timer_stopped)
+        track_elapsed_ms = stop_tick - track_start_tick;
     track_total_time_ms = track_elapsed_ms;
+    track_timer_stopped = true;
+    taskEXIT_CRITICAL();
     track_running = false;
     led_red.off(&led_red);
-}
-
-static float trackCalculateForwardSpeed(float remaining_distance_m)
-{
-    //位置环计算
-    float forward_speed = TRACK_POSITION_KP * remaining_distance_m;
-    float base_speed = trackModeUsesStableProfile(mode) ?
-                       TRACK_STABLE_BASE_SPEED_MPS :
-                       track.init_config.base_speed;
-
-    if (forward_speed > base_speed)
-        forward_speed = base_speed;
-    if (forward_speed < 0.0f)
-        forward_speed = 0.0f;
-
-    return forward_speed;
 }
 
 static float trackLimitForwardSpeed(float requested_speed_mps)
@@ -835,6 +1254,7 @@ static float trackLimitForwardSpeed(float requested_speed_mps)
     float speed_scale = 1.0f;
     uint32_t now_tick = HAL_GetTick();
     bool stable_profile = trackModeUsesStableProfile(mode);
+    bool ball_lap_profile = trackModeUsesBallLapProfile(mode);
     bool outer_sensor_only =
         (track.data.black_mask == 0x01U) ||
         (track.data.black_mask == 0x80U);
@@ -845,7 +1265,16 @@ static float trackLimitForwardSpeed(float requested_speed_mps)
     if (outer_sensor_only || (absolute_error >= 1.0f))
         track_slow_until_tick = now_tick + TRACK_CORNER_EXIT_HOLD_MS;
 
-    if (stable_profile)
+    if (ball_lap_profile)
+    {
+        if (track.data.black_count == 0U)
+            speed_scale = 0.07f;
+        else if (outer_sensor_only || (absolute_error >= 2.0f))
+            speed_scale = 0.90f;
+        else if (absolute_error >= 1.0f)
+            speed_scale = 0.95f;
+    }
+    else if (stable_profile)
     {
         if (track.data.black_count == 0U)
             speed_scale = 0.07f;
@@ -859,21 +1288,31 @@ static float trackLimitForwardSpeed(float requested_speed_mps)
     else
     {
         if (track.data.black_count == 0U)
-            speed_scale = 0.07f;
+        {
+            speed_scale =
+                (track.data.line_lost_time_s <
+                 TRACK_MODE2_TRANSIENT_LOSS_TIME_S) ?
+                TRACK_MODE2_TRANSIENT_LOSS_SPEED_SCALE :
+                TRACK_MODE2_LOST_LINE_SPEED_SCALE;
+        }
         else if (outer_sensor_only)
-            speed_scale = 0.12f;
+            speed_scale = TRACK_MODE2_OUTER_SENSOR_SPEED_SCALE;
         else if (absolute_error >= 3.0f)
-            speed_scale = 0.40f;
+            speed_scale = TRACK_MODE2_LARGE_ERROR_SPEED_SCALE;
         else if (absolute_error >= 2.0f)
-            speed_scale = 0.40f;
+            speed_scale = TRACK_MODE2_LARGE_ERROR_SPEED_SCALE;
         else if (absolute_error >= 1.0f)
-            speed_scale = 0.50f;
+            speed_scale = TRACK_MODE2_LARGE_ERROR_SPEED_SCALE;
     }
 
     if (((int32_t)(track_slow_until_tick - now_tick) > 0) &&
-        (speed_scale > (stable_profile ? 0.46f : 0.40f)))
+        (speed_scale > (ball_lap_profile ? 0.90f :
+                        (stable_profile ? 0.46f :
+                         TRACK_MODE2_CORNER_HOLD_SPEED_SCALE))))
     {
-        speed_scale = stable_profile ? 0.46f : 0.40f;
+        speed_scale = ball_lap_profile ? 0.90f :
+                      (stable_profile ? 0.46f :
+                       TRACK_MODE2_CORNER_HOLD_SPEED_SCALE);
     }
 
     return requested_speed_mps * speed_scale;
@@ -883,21 +1322,38 @@ static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s)
 {
     float maximum_step;
     bool stable_profile = trackModeUsesStableProfile(mode);
+    bool ball_lap_profile = trackModeUsesBallLapProfile(mode);
 
     if (dt_s <= 0.0f)
         dt_s = TRACK_CONTROL_DT_S;
 
+    if (stable_profile &&
+        (track_elapsed_ms < TRACK_STABLE_SOFT_START_MS))
+    {
+        float progress =
+            (float)track_elapsed_ms /
+            (float)TRACK_STABLE_SOFT_START_MS;
+        float smooth_progress =
+            progress * progress * (3.0f - (2.0f * progress));
+
+        target_speed_mps *= smooth_progress;
+    }
+
     if (target_speed_mps > track_forward_speed_command)
     {
-        maximum_step = (stable_profile ? TRACK_STABLE_FORWARD_ACCEL_MPS2 :
-                        TRACK_FORWARD_ACCEL_MPS2) * dt_s;
+        maximum_step =
+            (ball_lap_profile ? TRACK_BALL_LAP_FORWARD_ACCEL_MPS2 :
+             (stable_profile ? TRACK_STABLE_FORWARD_ACCEL_MPS2 :
+              TRACK_FORWARD_ACCEL_MPS2)) * dt_s;
         if ((target_speed_mps - track_forward_speed_command) > maximum_step)
             target_speed_mps = track_forward_speed_command + maximum_step;
     }
     else
     {
-        maximum_step = (stable_profile ? TRACK_STABLE_FORWARD_DECEL_MPS2 :
-                        TRACK_FORWARD_DECEL_MPS2) * dt_s;
+        maximum_step =
+            (ball_lap_profile ? TRACK_BALL_LAP_FORWARD_DECEL_MPS2 :
+             (stable_profile ? TRACK_STABLE_FORWARD_DECEL_MPS2 :
+              TRACK_FORWARD_DECEL_MPS2)) * dt_s;
         if ((track_forward_speed_command - target_speed_mps) > maximum_step)
             target_speed_mps = track_forward_speed_command - maximum_step;
     }
@@ -906,9 +1362,23 @@ static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s)
     return track_forward_speed_command;
 }
 
+static float trackWrapAngleRad(float angle_rad)
+{
+    while (angle_rad > 3.14159265f)
+        angle_rad -= 6.28318531f;
+    while (angle_rad < -3.14159265f)
+        angle_rad += 6.28318531f;
+    return angle_rad;
+}
+
 void UART_IMU0_INST_IRQHandler(void)
 {
     USARTIRQHandler(&huart_imu0);
+}
+
+void UART_HC12_INST_IRQHandler(void)
+{
+    USARTIRQHandler(&huart_hc12);
 }
 
 void MCAN_GIMBAL_INST_IRQHandler(void)
@@ -926,7 +1396,11 @@ void keyEventCallback(Key_t *key, KeyEvent_t event, void *context)
         {
             if (trackModeIsSupported(mode))
             {
-                if (!track_running && !track_start_requested)
+                if (track_running || track_start_requested)
+                {
+                    track_stop_requested = true;
+                }
+                else
                 {
                     track_start_request_tick = HAL_GetTickFromISR();
                     track_start_requested = true;
@@ -1000,9 +1474,11 @@ static void key1ProcessEvents(void)
         {
             ball_target = ball_real;
         }
-        else
+        else if (!track_running && !track_start_requested)
         {
             if (mode == ROBOT_MODE_REQUIREMENT_2)
+                mode = ROBOT_MODE_REQUIREMENT_3;
+            else if (mode == ROBOT_MODE_REQUIREMENT_3)
                 mode = ROBOT_MODE_REQUIREMENT_4;
             else if (mode == ROBOT_MODE_REQUIREMENT_4)
                 mode = ROBOT_MODE_REQUIREMENT_5;
@@ -1198,7 +1674,7 @@ static void trackInit(void){
         .gray = &gray,
         .channel_count = 8U,
         .weights = { -3.5f, -2.5f, -1.5f, -0.5f, 0.5f, 1.5f, 2.5f, 3.5f },
-        .base_speed = 0.65f,
+        .base_speed = 0.58f,
         .max_turn_speed = 0.85f,
         .pid_config = {
             .kp = 0.235f,
@@ -1409,4 +1885,80 @@ static void chassisInit(void)
         .auto_start = true
     };
     configASSERT(chassis.init(&chassis, &chassis_config));
+}
+
+static void zdt42Init(void)
+{
+    const Zdt42InitConfig_t zdt42_motor_config = {
+        .mcan            = MCAN_GIMBAL_INST,
+        .irq_number      = MCAN_GIMBAL_INST_INT_IRQN,
+        .tx_buffer_index = 0U,
+        .rx_fifo_number  = DL_MCAN_RX_FIFO_NUM_0,
+        .motor_id        = ZDT42_BALL_MOTOR_ID,
+        .checksum        = ZDT42_DEFAULT_CHECKSUM,
+        .tx_timeout_ms   = ZDT42_DEFAULT_TX_TIMEOUT_MS,
+        .id              = NULL,
+    };
+
+    configASSERT(zdt42_motor.init(&zdt42_motor, &zdt42_motor_config));
+}
+
+static void ballControlInit(void)
+{
+    const BallControlInitConfig_t ball_control_config = {
+        .motor = &zdt42_motor,
+        .position_pid = {
+            .kp = 0.8f,
+            .ki = 0.0f,
+            .kd = 0.08f,
+            .enable_output_limit = true,
+            .output_min = -5.0f,
+            .output_max = 5.0f,
+            .enable_integral_limit = true,
+            .integral_min = -1.0f,
+            .integral_max = 1.0f,
+            .deadband = 0.15f,
+            .derivative_filter_tau_s = 0.08f,
+            .derivative_on_measurement = true,
+            .reset_integral_on_deadband = true,
+        },
+        .angle_pid = {
+            .kp = 15.0f,
+            .ki = 0.0f,
+            .kd = 0.20f,
+            .enable_output_limit = true,
+            .output_min = -120.0f,
+            .output_max = 120.0f,
+            .enable_integral_limit = true,
+            .integral_min = -20.0f,
+            .integral_max = 20.0f,
+            .deadband = 0.05f,
+            .derivative_filter_tau_s = 0.04f,
+            .derivative_on_measurement = true,
+            .reset_integral_on_deadband = true,
+        },
+        .motor_to_rod_ratio = 1.0f,
+        .motor_direction = 1.0f,
+        .maximum_target_cm = 12.0f,
+        .maximum_rod_angle_deg = 5.0f,
+        .maximum_motor_speed_rpm = 120.0f,
+        .motor_speed_slew_rpm_per_s = 400.0f,
+        .measurement_velocity_filter_s = 0.08f,
+        .prediction_horizon_s = 0.0f,
+        .sequence_tolerance_cm = 0.8f,
+        .motor_acceleration = 10U,
+        .control_period_ms = 10U,
+        .motor_command_period_ms = 20U,
+        .motor_feedback_period_ms = 20U,
+        .motor_feedback_timeout_ms = 120U,
+        .measurement_timeout_ms = 200U,
+        .arming_timeout_ms = 800U,
+        .sequence_hold_ms = 200U,
+    };
+
+    if (!ball_control.init(&ball_control, &ball_control_config))
+    {
+        ball_control_init_error = 1U;
+        configASSERT(false);
+    }
 }

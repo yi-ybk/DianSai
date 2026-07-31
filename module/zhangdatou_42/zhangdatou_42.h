@@ -82,6 +82,7 @@ typedef struct
     uint32_t checksum_error_count;  /**< 校验错误帧数 */
     uint32_t tx_error_count;        /**< 发送失败帧数 */
     uint32_t last_rx_tick;          /**< 最近有效反馈的HAL毫秒时间戳 */
+    uint32_t position_rx_tick;      /**< 最近位置反馈的HAL毫秒时间戳 */
 } Zdt42Data_t;
 
 typedef struct Zdt42 Zdt42_t;
