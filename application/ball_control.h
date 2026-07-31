@@ -1,11 +1,11 @@
 /**
  * @file ball_control.h
- * @brief Single-axis ball-and-beam cascaded control framework.
+ * @brief Single-axis servo-driven ball-and-beam control framework.
  */
 #pragma once
 
+#include "motor_driver.h"
 #include "pid.h"
-#include "zhangdatou_42.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -34,39 +34,20 @@ typedef enum
 
 typedef struct
 {
-    Zdt42_t *motor;
+    Motor_t *motor;
     PidInitConfig_t position_pid;
-    PidInitConfig_t angle_pid;
-    float motor_to_rod_positive_linear;
-    float motor_to_rod_positive_quadratic;
-    float motor_to_rod_negative_linear;
-    float motor_to_rod_negative_quadratic;
+    float motor_to_rod_ratio;
     float motor_direction;
-    float position_to_rod_direction;
-    float minimum_motor_offset_deg;
-    float maximum_motor_offset_deg;
+    float servo_center_angle_deg;
     float maximum_target_cm;
     float maximum_rod_angle_deg;
-    float maximum_motor_speed_rpm;
-    float motor_speed_slew_rpm_per_s;
+    float maximum_servo_slew_deg_per_s;
     float measurement_velocity_filter_s;
     float prediction_horizon_s;
     float sequence_tolerance_cm;
-    float minimum_drive_angle_deg;
-    float minimum_drive_error_cm;
-    float minimum_drive_velocity_cm_s;
-    float stall_position_epsilon_cm;
-    float disturbance_angle_deg;
-    float lost_search_angle_deg;
-    float return_ball_tolerance_cm;
-    float return_tolerance_deg;
-    uint8_t motor_acceleration;
     uint16_t control_period_ms;
     uint16_t motor_command_period_ms;
-    uint16_t motor_feedback_period_ms;
-    uint16_t motor_feedback_timeout_ms;
     uint16_t measurement_timeout_ms;
-    uint16_t arming_timeout_ms;
     uint16_t sequence_hold_ms;
     uint16_t stall_detection_ms;
     uint16_t disturbance_duration_ms;
@@ -88,9 +69,7 @@ typedef struct
     float predicted_cm;
     float desired_rod_angle_deg;
     float rod_angle_deg;
-    float motor_speed_command_rpm;
-    float motor_offset_deg;
-    float motor_zero_deg;
+    float servo_angle_command_deg;
     uint32_t start_tick;
     uint32_t completion_time_ms;
     uint32_t measurement_tick;
@@ -115,22 +94,16 @@ struct BallControl
     BallControlInitConfig_t init_config;
     BallControlData_t data;
     Pid_t position_pid;
-    Pid_t angle_pid;
     float hold_target_cm;
     float positive_target_cm;
     float negative_target_cm;
     float previous_measurement_cm;
-    float previous_speed_command_rpm;
-    float desired_angle_command_deg;
-    float requested_speed_command_rpm;
-    float stall_reference_cm;
+    float previous_servo_angle_deg;
     uint32_t previous_measurement_tick;
     uint32_t last_outer_measurement_tick;
     uint32_t last_inner_feedback_tick;
     uint32_t last_update_tick;
     uint32_t last_command_tick;
-    uint32_t last_feedback_request_tick;
-    uint32_t last_position_feedback_tick;
     uint32_t sequence_inside_tick;
     uint32_t stall_reference_tick;
     uint32_t disturbance_start_tick;

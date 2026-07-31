@@ -39,7 +39,6 @@ EncoderInit
 
 extern Wheel_t left_wheel;
 extern Wheel_t right_wheel;
-extern Imu_t imu0;
 
 static Chassis_t chassis = { CHASSIS_OBJECT_DEFAULT };
 
@@ -63,7 +62,6 @@ static const ChassisInitConfig_t chassis_config = {
     .wheels = chassis_wheels,
     .wheel_kinematics = chassis_kinematics,
     .wheel_count = sizeof(chassis_wheels) / sizeof(chassis_wheels[0]),
-    .imu = &imu0,
     .auto_start = false,
 };
 
@@ -173,13 +171,7 @@ chassis.reset_odometry(&chassis);
 
 该操作会复位所有 Wheel 及其绑定 Encoder 的累计计数。
 
-## 8. IMU 绑定现状
-
-`.imu = &imu0` 当前只把 IMU 对象保存到 Chassis 内部，尚未用于控制、航向校正或里程融合。`turn_angle_rad` 完全来自驱动轮里程。
-
-后续需要融合 IMU 时，应增加明确的里程计/姿态融合算法，而不是直接用陀螺仪角速度覆盖轮式里程。还需要处理时间同步、零偏、坐标系和无效帧。
-
-## 9. 安全停止
+## 8. 安全停止
 
 ```c
 chassis.stop(&chassis);

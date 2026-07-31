@@ -1,11 +1,10 @@
 /**
  * @file    chassis.h
  * @brief   底盘组件头文件
- * @details 聚合可变数量的驱动轮对象并可选绑定IMU，仅提供底盘级控制和状态访问接口。
+ * @details 聚合可变数量的驱动轮对象，仅提供底盘级控制和状态访问接口。
  */
 #pragma once
 
-#include "imu_driver.h"
 #include "wheel_driver.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -23,7 +22,6 @@ typedef struct
     Wheel_t *const *wheels;                           /**< 驱动轮对象指针数组，数组生命周期需覆盖底盘对象 */
     const ChassisWheelKinematics_t *wheel_kinematics; /**< 驱动轮运动学配置数组，顺序与wheels一致 */
     uint8_t wheel_count;                              /**< 驱动轮数量 */
-    Imu_t *imu;                                       /**< 底盘内部绑定的IMU对象，允许为NULL */
     bool auto_start;                                  /**< 初始化后是否自动启动底盘 */
 } ChassisInitConfig_t;
 
@@ -51,8 +49,6 @@ struct Chassis
 {
     Wheel_t *const *wheels;                           /**< 内部绑定的驱动轮对象指针数组 */
     const ChassisWheelKinematics_t *wheel_kinematics; /**< 内部使用的驱动轮运动学配置数组 */
-    Imu_t *imu;                                       /**< 内部绑定的IMU对象 */
-
     bool initialized;                /**< 初始化标记 */
     ChassisInitConfig_t init_config; /**< 初始化配置缓存 */
     ChassisData_t data;              /**< 当前底盘运行数据 */

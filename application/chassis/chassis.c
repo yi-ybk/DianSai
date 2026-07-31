@@ -35,7 +35,6 @@ bool ChassisInit(Chassis_t *chassis, const ChassisInitConfig_t *config)
     chassis->init_config = *config;
     chassis->wheels = config->wheels;
     chassis->wheel_kinematics = config->wheel_kinematics;
-    chassis->imu = config->imu;
     memset(&chassis->data, 0, sizeof(chassis->data));
     chassis->data.wheel_count = config->wheel_count;
     chassis->data.wheel_speed_scale = 1.0f;

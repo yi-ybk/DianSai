@@ -1,6 +1,6 @@
 /**
  * @file ball_control.c
- * @brief Low-overhead cascaded controller for a single-axis ball-and-beam.
+ * @brief Low-overhead controller for a servo-driven ball-and-beam.
  */
 #include "ball_control.h"
 #include "FreeRTOS.h"
@@ -10,10 +10,6 @@
 static float BallClamp(float value, float minimum, float maximum);
 static float BallAbs(float value);
 static bool BallFinite(float value);
-static float BallMotorOffsetToRodAngle(const BallControl_t *control,
-                                       float motor_offset_deg);
-static bool BallSendSpeed(BallControl_t *control, float speed_rpm);
-static void BallMotorOff(BallControl_t *control);
 static void BallUpdateSequence(BallControl_t *control, uint32_t now_tick);
 
 bool BallControlInit(BallControl_t *control,
@@ -28,8 +24,13 @@ bool BallControlInit(BallControl_t *control,
         (config->maximum_motor_offset_deg <= 0.0f) ||
         (config->maximum_target_cm <= 0.0f) ||
         (config->maximum_rod_angle_deg <= 0.0f) ||
-        (config->maximum_motor_speed_rpm <= 0.0f) ||
-        (config->motor_speed_slew_rpm_per_s <= 0.0f) ||
+        (!config->motor->initialized) ||
+        (config->motor->init_config.type != MOTOR_TYPE_SERVO) ||
+        (config->servo_center_angle_deg <
+         config->motor->init_config.servo_min_angle) ||
+        (config->servo_center_angle_deg >
+         config->motor->init_config.servo_max_angle) ||
+        (config->maximum_servo_slew_deg_per_s <= 0.0f) ||
         (BallAbs(config->motor_direction) < 0.5f) ||
         (BallAbs(config->position_to_rod_direction) < 0.5f) ||
         (config->measurement_velocity_filter_s < 0.0f) ||
@@ -51,20 +52,8 @@ bool BallControlInit(BallControl_t *control,
         (config->return_tolerance_deg <= 0.0f) ||
         (config->control_period_ms == 0U) ||
         (config->motor_command_period_ms < config->control_period_ms) ||
-        (config->motor_feedback_period_ms == 0U) ||
-        (config->motor_feedback_timeout_ms <
-         (2U * config->motor_feedback_period_ms)) ||
         (config->measurement_timeout_ms == 0U) ||
-        (config->arming_timeout_ms == 0U) ||
-        (config->sequence_hold_ms == 0U) ||
-        (config->stall_detection_ms == 0U) ||
-        (config->disturbance_duration_ms == 0U) ||
-        (config->lost_search_step_ms == 0U) ||
-        (config->lost_search_timeout_ms <
-         config->lost_search_step_ms) ||
-        (config->return_ball_hold_ms == 0U) ||
-        (config->return_hold_ms == 0U) ||
-        (config->return_timeout_ms < config->return_hold_ms))
+        (config->sequence_hold_ms == 0U))
     {
         return false;
     }
@@ -79,24 +68,15 @@ bool BallControlInit(BallControl_t *control,
     control->get_data = BallControlGetData;
     control->init_config = *config;
     control->position_pid = (Pid_t){ PID_OBJECT_DEFAULT };
-    control->angle_pid = (Pid_t){ PID_OBJECT_DEFAULT };
     if (!control->position_pid.init(&control->position_pid,
-                                    &config->position_pid) ||
-        !control->angle_pid.init(&control->angle_pid,
-                                 &config->angle_pid))
+                                    &config->position_pid))
     {
         return false;
     }
 
     control->data.state = BALL_CONTROL_IDLE;
-    if (!config->motor->clear_fault(config->motor) ||
-        !config->motor->stop(config->motor, false) ||
-        !config->motor->enable(config->motor, true, false) ||
-        !config->motor->set_auto_return(
-            config->motor, ZDT42_PARAM_POSITION, 100U))
-    {
-        return false;
-    }
+    control->data.servo_angle_command_deg = config->servo_center_angle_deg;
+    control->previous_servo_angle_deg = config->servo_center_angle_deg;
     control->initialized = true;
     return true;
 }
@@ -132,16 +112,10 @@ bool BallControlStart(BallControl_t *control,
         control->init_config.maximum_target_cm);
 
     control->position_pid.reset(&control->position_pid);
-    control->angle_pid.reset(&control->angle_pid);
-    control->previous_speed_command_rpm = 0.0f;
-    control->desired_angle_command_deg = 0.0f;
-    control->requested_speed_command_rpm = 0.0f;
-    control->last_outer_measurement_tick = 0U;
-    control->last_inner_feedback_tick = 0U;
+    control->previous_servo_angle_deg =
+        control->init_config.servo_center_angle_deg;
     control->last_update_tick = now_tick;
     control->last_command_tick = now_tick;
-    control->last_feedback_request_tick = now_tick;
-    control->last_position_feedback_tick = now_tick;
     control->sequence_inside_tick = 0U;
     control->sequence_inside = false;
     control->stall_reference_cm = control->data.measured_cm;
@@ -167,17 +141,16 @@ bool BallControlStart(BallControl_t *control,
     control->data.completion_time_ms = 0U;
     control->data.sequence_complete = false;
     control->data.measurement_stale = true;
-    control->data.motor_speed_command_rpm = 0.0f;
-    control->data.state = BALL_CONTROL_ARMING;
+    control->data.rod_angle_deg = 0.0f;
+    control->data.servo_angle_command_deg =
+        control->init_config.servo_center_angle_deg;
+    control->data.state = BALL_CONTROL_ACTIVE;
     taskEXIT_CRITICAL();
 
-    if (!control->init_config.motor->read_parameter(
-            control->init_config.motor, ZDT42_PARAM_POSITION))
-    {
-        control->data.command_error_count++;
-        control->data.state = BALL_CONTROL_FAULT;
-        return false;
-    }
+    control->init_config.motor->start(control->init_config.motor);
+    control->init_config.motor->set_angle(
+        control->init_config.motor,
+        control->init_config.servo_center_angle_deg);
     return true;
 }
 
@@ -188,40 +161,19 @@ void BallControlStop(BallControl_t *control)
     if ((control == NULL) || (!control->initialized))
         return;
 
-    if ((control->data.state == BALL_CONTROL_ACTIVE) ||
-        (control->data.state == BALL_CONTROL_RETURNING))
-    {
-        now_tick = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-        control->position_pid.reset(&control->position_pid);
-        control->angle_pid.reset(&control->angle_pid);
-        control->previous_speed_command_rpm = 0.0f;
-        control->desired_angle_command_deg = 0.0f;
-        control->requested_speed_command_rpm = 0.0f;
-        control->return_start_tick = now_tick;
-        control->return_inside_tick = 0U;
-        control->return_inside = false;
-        control->return_leveling = false;
-        control->return_forced_level = false;
-        control->disturbance_active = false;
-        taskENTER_CRITICAL();
-        control->data.state = BALL_CONTROL_RETURNING;
-        control->data.target_cm = control->hold_target_cm;
-        control->data.motor_speed_command_rpm = 0.0f;
-        control->data.desired_rod_angle_deg = 0.0f;
-        taskEXIT_CRITICAL();
-        return;
-    }
+    control->init_config.motor->set_angle(
+        control->init_config.motor,
+        control->init_config.servo_center_angle_deg);
 
-    BallMotorOff(control);
     control->position_pid.reset(&control->position_pid);
-    control->angle_pid.reset(&control->angle_pid);
-    control->previous_speed_command_rpm = 0.0f;
-    control->desired_angle_command_deg = 0.0f;
-    control->requested_speed_command_rpm = 0.0f;
+    control->previous_servo_angle_deg =
+        control->init_config.servo_center_angle_deg;
     taskENTER_CRITICAL();
     control->data.state = BALL_CONTROL_IDLE;
-    control->data.motor_speed_command_rpm = 0.0f;
+    control->data.servo_angle_command_deg =
+        control->init_config.servo_center_angle_deg;
     control->data.desired_rod_angle_deg = 0.0f;
+    control->data.rod_angle_deg = 0.0f;
     taskEXIT_CRITICAL();
 }
 
@@ -289,12 +241,10 @@ void BallControlSetMeasurement(BallControl_t *control,
 
 void BallControlUpdate(BallControl_t *control, uint32_t now_tick)
 {
-    Zdt42Data_t motor_data;
     BallControlData_t snapshot;
     float predicted_cm;
     float desired_angle_deg;
-    float rod_angle_deg;
-    float speed_rpm;
+    float servo_angle_deg;
     float maximum_step;
     float motor_offset_deg;
     float angle_error_deg;
@@ -330,69 +280,6 @@ void BallControlUpdate(BallControl_t *control, uint32_t now_tick)
         return;
     }
     control->last_update_tick = now_tick;
-
-    control->init_config.motor->get_data(
-        control->init_config.motor, &motor_data);
-    if ((motor_data.position_rx_tick != 0U) &&
-        ((uint32_t)(motor_data.position_rx_tick -
-                    control->last_position_feedback_tick) <
-         0x80000000UL))
-    {
-        control->last_position_feedback_tick =
-            motor_data.position_rx_tick;
-    }
-
-    if (control->data.state == BALL_CONTROL_ARMING)
-    {
-        if ((motor_data.position_rx_tick != 0U) &&
-            ((uint32_t)(motor_data.position_rx_tick -
-                        control->data.start_tick) < 0x80000000UL))
-        {
-            control->data.motor_zero_deg = motor_data.position_deg;
-            if (!control->init_config.motor->enable(
-                    control->init_config.motor, true, false) ||
-                !control->init_config.motor->set_auto_return(
-                    control->init_config.motor,
-                    ZDT42_PARAM_POSITION,
-                    control->init_config.motor_feedback_period_ms))
-            {
-                (void)control->init_config.motor->stop(
-                    control->init_config.motor, false);
-                (void)control->init_config.motor->enable(
-                    control->init_config.motor, false, false);
-                control->data.command_error_count++;
-                control->data.state = BALL_CONTROL_FAULT;
-                return;
-            }
-            control->data.state = BALL_CONTROL_ACTIVE;
-        }
-        else if ((now_tick - control->data.start_tick) >=
-                 control->init_config.arming_timeout_ms)
-        {
-            control->data.state = BALL_CONTROL_FAULT;
-            return;
-        }
-        else if ((now_tick - control->last_feedback_request_tick) >= 100U)
-        {
-            control->last_feedback_request_tick = now_tick;
-            if (!control->init_config.motor->read_parameter(
-                    control->init_config.motor, ZDT42_PARAM_POSITION))
-            {
-                control->data.command_error_count++;
-            }
-        }
-        return;
-    }
-
-    if ((now_tick - control->last_position_feedback_tick) >
-        control->init_config.motor_feedback_timeout_ms)
-    {
-        BallMotorOff(control);
-        control->data.command_error_count++;
-        control->data.motor_speed_command_rpm = 0.0f;
-        control->data.state = BALL_CONTROL_FAULT;
-        return;
-    }
 
     returning = control->data.state == BALL_CONTROL_RETURNING;
     if (!returning)
@@ -547,176 +434,34 @@ void BallControlUpdate(BallControl_t *control, uint32_t now_tick)
         }
         control->position_pid.reset(&control->position_pid);
     }
-    else
-    {
-        desired_angle_deg = control->desired_angle_command_deg;
-    }
-    motor_offset_deg = motor_data.position_deg - snapshot.motor_zero_deg;
-    rod_angle_deg =
-        BallMotorOffsetToRodAngle(control, motor_offset_deg);
 
-    if (returning)
-    {
-        if (!control->return_leveling)
-        {
-            if ((!measurement_stale) &&
-                (BallAbs(control->hold_target_cm -
-                         snapshot.measured_cm) <=
-                 control->init_config.return_ball_tolerance_cm))
-            {
-                if (!control->return_inside)
-                {
-                    control->return_inside = true;
-                    control->return_inside_tick = now_tick;
-                }
-                else if ((now_tick - control->return_inside_tick) >=
-                         control->init_config.return_ball_hold_ms)
-                {
-                    control->return_leveling = true;
-                    control->return_forced_level = false;
-                    control->return_inside = false;
-                    control->position_pid.reset(&control->position_pid);
-                    control->angle_pid.reset(&control->angle_pid);
-                    desired_angle_deg = 0.0f;
-                    control->desired_angle_command_deg = 0.0f;
-                }
-            }
-            else
-            {
-                control->return_inside = false;
-            }
-        }
-        else
-        {
-            if (BallAbs(rod_angle_deg) <=
-                control->init_config.return_tolerance_deg)
-            {
-                if (!control->return_inside)
-                {
-                    control->return_inside = true;
-                    control->return_inside_tick = now_tick;
-                }
-                else if ((now_tick - control->return_inside_tick) >=
-                         control->init_config.return_hold_ms)
-                {
-                    BallMotorOff(control);
-                    control->position_pid.reset(&control->position_pid);
-                    control->angle_pid.reset(&control->angle_pid);
-                    control->previous_speed_command_rpm = 0.0f;
-                    control->requested_speed_command_rpm = 0.0f;
-                    taskENTER_CRITICAL();
-                    control->data.state = BALL_CONTROL_IDLE;
-                    control->data.desired_rod_angle_deg = 0.0f;
-                    control->data.rod_angle_deg = rod_angle_deg;
-                    control->data.motor_speed_command_rpm = 0.0f;
-                    taskEXIT_CRITICAL();
-                    return;
-                }
-            }
-            else
-            {
-                control->return_inside = false;
-            }
-        }
+    desired_angle_deg = BallClamp(
+        desired_angle_deg,
+        -control->init_config.maximum_rod_angle_deg,
+        control->init_config.maximum_rod_angle_deg);
+    servo_angle_deg = control->init_config.servo_center_angle_deg +
+        desired_angle_deg * control->init_config.motor_direction *
+        control->init_config.motor_to_rod_ratio;
+    servo_angle_deg = BallClamp(
+        servo_angle_deg,
+        control->init_config.motor->init_config.servo_min_angle,
+        control->init_config.motor->init_config.servo_max_angle);
 
-        if ((now_tick - control->return_start_tick) >=
-            control->init_config.return_timeout_ms)
-        {
-            if (!control->return_leveling)
-            {
-                control->return_leveling = true;
-                control->return_forced_level = true;
-                control->return_inside = false;
-                control->return_start_tick = now_tick;
-                control->data.return_timeout_count++;
-                control->position_pid.reset(&control->position_pid);
-                control->angle_pid.reset(&control->angle_pid);
-                desired_angle_deg = 0.0f;
-                control->desired_angle_command_deg = 0.0f;
-            }
-            else
-            {
-                BallMotorOff(control);
-                control->data.command_error_count++;
-                control->data.motor_speed_command_rpm = 0.0f;
-                control->data.state = BALL_CONTROL_FAULT;
-                return;
-            }
-        }
-    }
-    new_motor_feedback =
-        (motor_data.position_rx_tick != 0U) &&
-        (motor_data.position_rx_tick !=
-         control->last_inner_feedback_tick);
-    if (new_motor_feedback)
-    {
-        inner_dt_s =
-            control->last_inner_feedback_tick == 0U ?
-            (float)control->init_config.motor_feedback_period_ms *
-            0.001f :
-            (float)(motor_data.position_rx_tick -
-                    control->last_inner_feedback_tick) * 0.001f;
-        if (inner_dt_s < 0.005f)
-            inner_dt_s = 0.005f;
-        if (inner_dt_s > 0.10f)
-            inner_dt_s = 0.10f;
-        speed_rpm = control->angle_pid.calculate(
-            &control->angle_pid,
-            rod_angle_deg,
-            desired_angle_deg,
-            inner_dt_s) * control->init_config.motor_direction;
-        speed_rpm = BallClamp(
-            speed_rpm,
-            -control->init_config.maximum_motor_speed_rpm,
-            control->init_config.maximum_motor_speed_rpm);
-        maximum_step =
-            control->init_config.motor_speed_slew_rpm_per_s *
-            inner_dt_s;
-        speed_rpm = BallClamp(
-            speed_rpm,
-            control->previous_speed_command_rpm - maximum_step,
-            control->previous_speed_command_rpm + maximum_step);
-        angle_error_deg = desired_angle_deg - rod_angle_deg;
-        if ((BallAbs(angle_error_deg) >
-             control->angle_pid.init_config.deadband) &&
-            (BallAbs(speed_rpm) < 1.0f))
-        {
-            speed_rpm = angle_error_deg *
-                        control->init_config.motor_direction > 0.0f ?
-                        1.0f : -1.0f;
-        }
-        if (((motor_offset_deg <=
-              control->init_config.minimum_motor_offset_deg) &&
-             (speed_rpm < 0.0f)) ||
-            ((motor_offset_deg >=
-              control->init_config.maximum_motor_offset_deg) &&
-             (speed_rpm > 0.0f)))
-        {
-            speed_rpm = 0.0f;
-            control->requested_speed_command_rpm = 0.0f;
-            if (control->previous_speed_command_rpm != 0.0f)
-            {
-                (void)control->init_config.motor->stop(
-                    control->init_config.motor, false);
-                control->previous_speed_command_rpm = 0.0f;
-            }
-        }
-        control->requested_speed_command_rpm = speed_rpm;
-        control->last_inner_feedback_tick =
-            motor_data.position_rx_tick;
-        control->data.angle_update_count++;
-    }
-    else
-    {
-        speed_rpm = control->requested_speed_command_rpm;
-    }
+    maximum_step =
+        control->init_config.maximum_servo_slew_deg_per_s * dt_s;
+    servo_angle_deg = BallClamp(
+        servo_angle_deg,
+        control->previous_servo_angle_deg - maximum_step,
+        control->previous_servo_angle_deg + maximum_step);
 
     taskENTER_CRITICAL();
     control->data.predicted_cm = predicted_cm;
     control->data.desired_rod_angle_deg = desired_angle_deg;
-    control->data.rod_angle_deg = rod_angle_deg;
-    control->data.motor_speed_command_rpm = speed_rpm;
-    control->data.motor_offset_deg = motor_offset_deg;
+    control->data.rod_angle_deg =
+        (servo_angle_deg - control->init_config.servo_center_angle_deg) *
+        control->init_config.motor_direction /
+        control->init_config.motor_to_rod_ratio;
+    control->data.servo_angle_command_deg = servo_angle_deg;
     control->data.measurement_stale = measurement_stale;
     if (measurement_stale)
         control->data.stale_count++;
@@ -727,15 +472,10 @@ void BallControlUpdate(BallControl_t *control, uint32_t now_tick)
         control->init_config.motor_command_period_ms)
     {
         control->last_command_tick = now_tick;
-        if (BallSendSpeed(control, speed_rpm))
-        {
-            control->previous_speed_command_rpm = speed_rpm;
-            control->data.command_count++;
-        }
-        else
-        {
-            control->data.command_error_count++;
-        }
+        control->init_config.motor->set_angle(
+            control->init_config.motor, servo_angle_deg);
+        control->previous_servo_angle_deg = servo_angle_deg;
+        control->data.command_count++;
     }
 }
 
@@ -792,62 +532,6 @@ static void BallUpdateSequence(BallControl_t *control, uint32_t now_tick)
     {
         control->sequence_inside = false;
     }
-}
-
-static bool BallSendSpeed(BallControl_t *control, float speed_rpm)
-{
-    return control->init_config.motor->set_speed(
-        control->init_config.motor,
-        speed_rpm,
-        control->init_config.motor_acceleration,
-        false);
-}
-
-static void BallMotorOff(BallControl_t *control)
-{
-    if ((control == NULL) ||
-        (control->init_config.motor == NULL) ||
-        (!control->init_config.motor->initialized))
-    {
-        return;
-    }
-
-    (void)control->init_config.motor->set_auto_return(
-        control->init_config.motor, ZDT42_PARAM_POSITION, 0U);
-    (void)control->init_config.motor->stop(
-        control->init_config.motor, false);
-    (void)control->init_config.motor->enable(
-        control->init_config.motor, true, false);
-}
-
-static float BallMotorOffsetToRodAngle(const BallControl_t *control,
-                                       float motor_offset_deg)
-{
-    motor_offset_deg = BallClamp(
-        motor_offset_deg,
-        control->init_config.minimum_motor_offset_deg,
-        control->init_config.maximum_motor_offset_deg);
-    float magnitude = BallAbs(motor_offset_deg);
-    float rod_magnitude;
-    float motor_sign = motor_offset_deg >= 0.0f ? 1.0f : -1.0f;
-
-    if (motor_offset_deg >= 0.0f)
-    {
-        rod_magnitude = magnitude *
-            (control->init_config.motor_to_rod_positive_linear +
-             control->init_config.motor_to_rod_positive_quadratic *
-                 magnitude);
-    }
-    else
-    {
-        rod_magnitude = magnitude *
-            (control->init_config.motor_to_rod_negative_linear +
-             control->init_config.motor_to_rod_negative_quadratic *
-                 magnitude);
-    }
-
-    return rod_magnitude * motor_sign *
-           control->init_config.motor_direction;
 }
 
 static float BallClamp(float value, float minimum, float maximum)

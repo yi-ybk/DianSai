@@ -23,7 +23,6 @@ DMA回调只搬运字节，不解析协议，也不执行用户业务回调。�
 - UART应使用与主机一致的波特率、数据位、校验和停止位。
 - 一个UART只能被一个 `USARTRegister()` 用户占用。
 - 当前工程已经配置 `UART_SLAVER`：UART3、PB12/TX、PB13/RX、115200 baud、DMA通道1。
-- `UART_IMU0` 已被IMU使用，不能再绑定给 `Slaver_t`。
 - `Slaver_t` 依赖FreeRTOS流缓冲，必须在FreeRTOS可用的工程中使用。
 
 `SlaverInit()` 会检查UART是否已被USART模块注册。若已占用，初始化返回 `false`，不会
