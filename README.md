@@ -265,7 +265,7 @@ Debug/DianSai_MSPM0G3507.out
 ```text
 application/     应用层、机器人和底盘逻辑
 bsp/             MSPM0 外设抽象与板级驱动
-module/          电机、编码器、IMU、OLED、按键、蜂鸣器等功能模块
+module/          电机、编码器、OLED、按键、蜂鸣器等功能模块
 freertos/        主工程使用的启动文件
 targetConfigs/   CCS/J-Link 目标配置
 .vscode/         VS Code 编译、烧录和 IntelliSense 配置
