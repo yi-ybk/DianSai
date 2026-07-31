@@ -23,6 +23,7 @@ static CANInstance *can_instance[CAN_MX_REGISTER_CNT];
 static bool CANIdIsValid(uint32_t id, CANFrameType_t frame_type);
 static bool CANReceive(CANInstance *can, CANRxFrame_t *frame);
 static bool CANFrameMatches(const CANInstance *can, const CANRxFrame_t *frame);
+static bool CANEnsureNormalMode(CANInstance *can, float timeout_ms);
 
 CANInstance *CANRegister(CAN_Init_Config_s *config)
 {
@@ -99,6 +100,7 @@ bool CANTransmit(CANInstance *can, float timeout_ms)
     if ((can == NULL) || (can->mcan == NULL) ||
         (can->tx_len > CAN_CLASSIC_DATA_MAX_LEN) ||
         !CANIdIsValid(can->tx_id, can->tx_frame_type) ||
+        !CANEnsureNormalMode(can, timeout_ms) ||
         !CANWaitForTxComplete(can, timeout_ms))
     {
         return false;
@@ -282,4 +284,33 @@ static bool CANIdIsValid(uint32_t id, CANFrameType_t frame_type)
     if (frame_type == CAN_FRAME_EXTENDED)
         return id <= 0x1FFFFFFFU;
     return false;
+}
+
+static bool CANEnsureNormalMode(CANInstance *can, float timeout_ms)
+{
+    uint32_t elapsed_us = 0U;
+    uint32_t timeout_us;
+
+    if ((can == NULL) || (can->mcan == NULL) ||
+        (timeout_ms < 0.0f) || (timeout_ms != timeout_ms))
+    {
+        return false;
+    }
+
+    timeout_us = (uint32_t)(timeout_ms * 1000.0f + 0.5f);
+    DL_MCAN_disableClockStopGateRequest(can->mcan);
+    DL_MCAN_addClockStopRequest(can->mcan, false);
+    DL_MCAN_setOpMode(can->mcan, DL_MCAN_OPERATION_MODE_NORMAL);
+
+    while ((DL_MCAN_getOpMode(can->mcan) !=
+            DL_MCAN_OPERATION_MODE_NORMAL) ||
+           DL_MCAN_getClockStopAcknowledgeStatus(can->mcan))
+    {
+        if (elapsed_us >= timeout_us)
+            return false;
+        BSP_DelayUs(10U);
+        elapsed_us += 10U;
+    }
+
+    return true;
 }

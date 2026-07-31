@@ -217,7 +217,7 @@ float target_f5cm = -5.0f;
 #define ROBOT_MODE_REQUIREMENT_4          4U
 #define ROBOT_MODE_REQUIREMENT_5          5U
 #define ROBOT_MODE_REQUIREMENT_6          6U
-#define ZDT42_BALL_MOTOR_ID               1U
+#define ZDT42_BALL_MOTOR_ID               2U
 #define TRACK_USE_SMALL_TEST_MAP          0U
 #if TRACK_USE_SMALL_TEST_MAP
 #define TRACK_LAP_DISTANCE_M              3.75f
