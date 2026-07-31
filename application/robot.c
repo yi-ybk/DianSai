@@ -41,13 +41,16 @@ static bool trackFinishLineDetected(float distance_m);
 static void trackRunRequirement2(uint32_t now_tick, float dt_s);
 static void trackRunRequirement4(uint32_t now_tick, float dt_s);
 static void trackRunRequirement5Or6(uint32_t now_tick, float dt_s);
-static void trackCaptureTelemetry(uint32_t now_tick);
+static void ballCaptureTelemetry(uint32_t now_tick);
 static void trackStart(uint32_t start_tick);
 static void trackStop(uint32_t stop_tick);
 static bool trackOnlyTestModeActive(void);
 static float trackLimitForwardSpeed(float requested_speed_mps);
 static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s);
 static float trackWrapAngleRad(float angle_rad);
+static bool ballPositionPixelValid(float position_px);
+static float ballPositionPixelToCm(float position_px);
+static float ballPositionCmToPixel(float position_cm);
 static void trackInit(void);
 static void ledInit(void);
 static void oledInit(void);
@@ -206,11 +209,11 @@ Imu_t imu0 = {
         },
 };
 
-float ball_target = 0.0f;
+float ball_target = 150.0f;
 float ball_real   = 0.0f;
 
-float target_5cm  = 5.0f;
-float target_f5cm = -5.0f;
+float target_5cm  = 90.0f;
+float target_f5cm = 210.0f;
 
 #define ROBOT_MODE_REQUIREMENT_3          3U
 #define ROBOT_MODE_REQUIREMENT_2          2U
@@ -256,9 +259,7 @@ float target_f5cm = -5.0f;
 #define KEY_A07_DEBOUNCE_MS               50U
 #define OLED_COUNTER_INTERVAL_MS           1000U
 #define TRACK_CONTROL_DT_S                 0.005f
-#define TRACK_TELEMETRY_CAPACITY            800U
-#define TRACK_TELEMETRY_PERIOD_MS           40U
-#define TRACK_TELEMETRY_START_DELAY_MS        0U
+#define TRACK_START_REQUEST_MAX_AGE_MS        50U
 #define TRACK_CORNER_EXIT_HOLD_MS          350U
 #define TRACK_FORWARD_ACCEL_MPS2           1.10f
 #define TRACK_FORWARD_DECEL_MPS2           3.50f
@@ -285,8 +286,17 @@ float target_f5cm = -5.0f;
 #define BALL_HOST_FRAME_HEADER              0xA5U
 #define BALL_HOST_FRAME_TAIL                0x5AU
 #define BALL_HOST_FRAME_LENGTH              7U
-#define BALL_HOST_RX_BUFFER_SIZE             64U
-#define BALL_CONTROL_TASK_PERIOD_MS          10U
+#define BALL_HOST_RX_BUFFER_SIZE   BALL_HOST_FRAME_LENGTH
+#define BALL_CONTROL_TASK_PERIOD_MS           5U
+#define BALL_POSITION_CENTER_PX             150.0f
+#define BALL_POSITION_PIXELS_PER_CM          12.0f
+#define BALL_POSITION_MIN_PX                  0.0f
+#define BALL_POSITION_MAX_PX                300.0f
+#define BALL_HOST_INVALID_POSITION           -1.0f
+#define BALL_MODE3_START_TOLERANCE_PX         60.0f
+#define BALL_MODE3_START_MAX_AGE_MS          500U
+#define BALL_TELEMETRY_CAPACITY              200U
+#define BALL_TELEMETRY_PERIOD_MS              50U
 /* Set to 1 only while verifying chassis line following without the ball
  * balancing assembly powered. Requirement 3 always retains ball control. */
 #define TRACK_ONLY_TEST_MODE                  1U
@@ -331,19 +341,30 @@ volatile uint32_t track_finish_reverse_start_tick = 0U;
 
 typedef struct
 {
-    uint8_t black_mask;
-    int8_t error_x10;
-    int8_t turn_x100;
-    uint8_t black_count;
-    int16_t left_speed_x1000;
-    int16_t right_speed_x1000;
-    int16_t distance_mm;
-} TrackTelemetrySample_t;
+    uint32_t tick_ms;
+    int16_t measured_px;
+    int16_t target_px;
+    int16_t desired_angle_x100;
+    int16_t rod_angle_x100;
+    int16_t motor_speed_x10;
+    uint8_t state;
+    uint8_t sequence;
+} BallTelemetrySample_t;
 
-volatile TrackTelemetrySample_t
-    track_telemetry[TRACK_TELEMETRY_CAPACITY];
-volatile uint32_t track_telemetry_write_count = 0U;
-volatile uint32_t track_telemetry_last_tick = 0U;
+volatile BallTelemetrySample_t
+    ball_telemetry[BALL_TELEMETRY_CAPACITY];
+volatile uint32_t ball_telemetry_write_count = 0U;
+volatile uint32_t ball_telemetry_last_tick = 0U;
+volatile bool ball_telemetry_frozen = false;
+volatile uint32_t ball_host_valid_position_count = 0U;
+volatile uint32_t ball_host_invalid_position_count = 0U;
+volatile uint32_t ball_host_rejected_position_count = 0U;
+volatile uint32_t ball_host_integer_position_count = 0U;
+volatile uint32_t ball_host_fractional_position_count = 0U;
+volatile uint32_t ball_host_period_min_ms = 0U;
+volatile uint32_t ball_host_period_max_ms = 0U;
+volatile float ball_host_period_ema_ms = 0.0f;
+volatile uint32_t ball_host_last_frame_tick = 0U;
 
 static volatile bool ball_menu_active = false;
 static volatile bool track_running = false;
@@ -422,7 +443,8 @@ static void oledTask(void *argument)
             oled_default_counter++;
             last_counter_tick = now_tick;
         }
-        menu_active = ball_menu_active;
+        menu_active = ball_menu_active ||
+                      (mode == ROBOT_MODE_REQUIREMENT_3);
         oled.fill(&oled, OLED_COLOR_BLACK);
         if (menu_active)
             oledDrawBallPage();
@@ -509,21 +531,42 @@ static void oledDrawBallPage(void)
     BallControlData_t control_data;
     float target;
     float real;
+    float host_fps;
+    float host_period_ms;
+    uint32_t display_time_ms;
+    bool running;
 
     ball_control.get_data(&ball_control, &control_data);
     taskENTER_CRITICAL();
     target = ball_target;
     real = ball_real;
+    host_period_ms = ball_host_period_ema_ms;
+    running = track_running;
+    display_time_ms = running ? track_elapsed_ms : track_total_time_ms;
     taskEXIT_CRITICAL();
     if (control_data.state != BALL_CONTROL_IDLE)
-        target = control_data.target_cm;
+        target = ballPositionCmToPixel(control_data.target_cm);
+    host_fps = host_period_ms > 0.0f ? 1000.0f / host_period_ms : 0.0f;
 
-    oled.draw_string(&oled, 0, 0, "BALL MENU", OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 0, 2, "target:", OLED_COLOR_WHITE);
-    oled.draw_float(&oled, 8, 2, target, 2, OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 0, 4, "real:", OLED_COLOR_WHITE);
-    oled.draw_float(&oled, 8, 4, real, 2, OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 0, 6, "K1 short: save", OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 0, 0, "M3 BALL DEBUG", OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 0, 2, "T:", OLED_COLOR_WHITE);
+    oled.draw_int(&oled, 2, 2, (int32_t)(target + 0.5f),
+                  OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 8, 2, "R:", OLED_COLOR_WHITE);
+    oled.draw_int(&oled, 10, 2,
+                  real < 0.0f ? (int32_t)(real - 0.5f) :
+                                (int32_t)(real + 0.5f),
+                  OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 0, 4, "time:", OLED_COLOR_WHITE);
+    oled.draw_float(&oled, 5, 4,
+                    (float)display_time_ms * 0.001f,
+                    2, OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 11, 4, "s", OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 0, 6, "fps:", OLED_COLOR_WHITE);
+    oled.draw_float(&oled, 4, 6, host_fps, 1, OLED_COLOR_WHITE);
+    oled.draw_string(&oled, 10, 6, "q:", OLED_COLOR_WHITE);
+    oled.draw_int(&oled, 12, 6, (int32_t)control_data.sequence,
+                  OLED_COLOR_WHITE);
 }
 
 static void imuParseTask(void *argument)
@@ -594,6 +637,8 @@ static void ballHostControlTask(void *argument)
     };
     SlaverSimpleFloatData_t latest;
     uint32_t handled_update_count = 0U;
+    uint32_t frame_period_ms;
+    int32_t rounded_position;
     float requested_target;
 
     (void)argument;
@@ -620,12 +665,56 @@ static void ballHostControlTask(void *argument)
             (latest.update_count != handled_update_count))
         {
             handled_update_count = latest.update_count;
+            if (ball_host_last_frame_tick != 0U)
+            {
+                frame_period_ms =
+                    latest.last_update_tick -
+                    ball_host_last_frame_tick;
+                if ((ball_host_period_min_ms == 0U) ||
+                    (frame_period_ms < ball_host_period_min_ms))
+                {
+                    ball_host_period_min_ms = frame_period_ms;
+                }
+                if (frame_period_ms > ball_host_period_max_ms)
+                    ball_host_period_max_ms = frame_period_ms;
+                if (ball_host_period_ema_ms == 0.0f)
+                    ball_host_period_ema_ms = (float)frame_period_ms;
+                else
+                    ball_host_period_ema_ms +=
+                        0.125f *
+                        ((float)frame_period_ms -
+                         ball_host_period_ema_ms);
+            }
+            ball_host_last_frame_tick = latest.last_update_tick;
             taskENTER_CRITICAL();
             ball_real = latest.value;
             taskEXIT_CRITICAL();
-            ball_control.set_measurement(&ball_control,
-                                         latest.value,
-                                         latest.last_update_tick);
+            if (latest.value == BALL_HOST_INVALID_POSITION)
+            {
+                ball_host_invalid_position_count++;
+            }
+            else if (ballPositionPixelValid(latest.value))
+            {
+                rounded_position = (int32_t)(latest.value + 0.5f);
+                if ((latest.value - (float)rounded_position < 0.001f) &&
+                    ((float)rounded_position - latest.value < 0.001f))
+                {
+                    ball_host_integer_position_count++;
+                }
+                else
+                {
+                    ball_host_fractional_position_count++;
+                }
+                ball_host_valid_position_count++;
+                ball_control.set_measurement(
+                    &ball_control,
+                    ballPositionPixelToCm(latest.value),
+                    latest.last_update_tick);
+            }
+            else
+            {
+                ball_host_rejected_position_count++;
+            }
         }
 
         if ((mode == ROBOT_MODE_REQUIREMENT_4) ||
@@ -635,10 +724,13 @@ static void ballHostControlTask(void *argument)
             taskENTER_CRITICAL();
             requested_target = ball_target;
             taskEXIT_CRITICAL();
-            ball_control.set_target(&ball_control, requested_target);
+            ball_control.set_target(
+                &ball_control,
+                ballPositionPixelToCm(requested_target));
         }
 
         ball_control.update(&ball_control, HAL_GetTick());
+        ballCaptureTelemetry(HAL_GetTick());
         osDelay(BALL_CONTROL_TASK_PERIOD_MS);
     }
 }
@@ -679,7 +771,15 @@ static void trackTask(void *argument)
             if (stop_requested && track_running)
                 trackStop(HAL_GetTick());
             else if (start_requested && !track_running)
+            {
+                now_tick = HAL_GetTick();
+                if ((uint32_t)(now_tick - requested_start_tick) >
+                    TRACK_START_REQUEST_MAX_AGE_MS)
+                {
+                    requested_start_tick = now_tick;
+                }
                 trackStart(requested_start_tick);
+            }
         }
 
         if (track_running)
@@ -918,7 +1018,6 @@ static void trackRunRequirement2(uint32_t now_tick, float dt_s)
                 &chassis,
                 -TRACK_FINISH_REVERSE_SPEED_MPS,
                 0.0f);
-            trackCaptureTelemetry(now_tick);
         }
         return;
     }
@@ -1016,7 +1115,6 @@ static void trackRunRequirement2(uint32_t now_tick, float dt_s)
         }
         forward_speed = trackSmoothForwardSpeed(forward_speed, dt_s);
         chassis.set_velocity(&chassis, forward_speed, -turn_speed);
-        trackCaptureTelemetry(now_tick);
     }
 }
 
@@ -1071,7 +1169,6 @@ static void trackRunRequirement4(uint32_t now_tick, float dt_s)
                 trackLimitForwardSpeed(REQUIREMENT4_FORWARD_SPEED_MPS),
                 dt_s),
             -turn_speed);
-        trackCaptureTelemetry(now_tick);
     }
 }
 
@@ -1107,45 +1204,97 @@ static void trackRunRequirement5Or6(uint32_t now_tick, float dt_s)
         forward_speed = trackLimitForwardSpeed(forward_speed);
         forward_speed = trackSmoothForwardSpeed(forward_speed, dt_s);
         chassis.set_velocity(&chassis, forward_speed, -turn_speed);
-        trackCaptureTelemetry(now_tick);
     }
 }
 
-static void trackCaptureTelemetry(uint32_t now_tick)
+static void ballCaptureTelemetry(uint32_t now_tick)
 {
+    BallControlData_t control_data;
     uint32_t index;
-    volatile TrackTelemetrySample_t *sample;
+    float measured_px;
+    volatile BallTelemetrySample_t *sample;
 
-    if (track_elapsed_ms < TRACK_TELEMETRY_START_DELAY_MS)
+    ball_control.get_data(&ball_control, &control_data);
+    if ((mode != ROBOT_MODE_REQUIREMENT_3) ||
+        ((!track_running) &&
+         (control_data.state != BALL_CONTROL_RETURNING)) ||
+        ball_telemetry_frozen)
+    {
         return;
-    if (track_telemetry_write_count >= TRACK_TELEMETRY_CAPACITY)
+    }
+    if ((now_tick - ball_telemetry_last_tick) <
+        BALL_TELEMETRY_PERIOD_MS)
+    {
         return;
-    if ((now_tick - track_telemetry_last_tick) < TRACK_TELEMETRY_PERIOD_MS)
+    }
+    if (ball_telemetry_write_count >= BALL_TELEMETRY_CAPACITY)
+    {
+        ball_telemetry_frozen = true;
         return;
+    }
 
-    track_telemetry_last_tick = now_tick;
-    index = track_telemetry_write_count;
-    sample = &track_telemetry[index];
-    sample->black_mask = (uint8_t)track.data.black_mask;
-    sample->error_x10 =
-        (int8_t)(track.data.normalized_error * 10.0f);
-    sample->turn_x100 =
-        (int8_t)(track.data.turn_speed * 100.0f);
-    sample->black_count = track.data.black_count;
-    sample->left_speed_x1000 =
-        (int16_t)(wheel_left.data.linear_speed_mps * 1000.0f);
-    sample->right_speed_x1000 =
-        (int16_t)(wheel_right.data.linear_speed_mps * 1000.0f);
-    sample->distance_mm = (int16_t)(chassis.data.distance_m * 1000.0f);
-    track_telemetry_write_count++;
+    taskENTER_CRITICAL();
+    measured_px = ball_real;
+    taskEXIT_CRITICAL();
+    ball_telemetry_last_tick = now_tick;
+    index = ball_telemetry_write_count;
+    sample = &ball_telemetry[index];
+    sample->tick_ms = now_tick - track_start_tick;
+    sample->measured_px = (measured_px == BALL_HOST_INVALID_POSITION) ?
+        -1 : (int16_t)(measured_px + 0.5f);
+    sample->target_px = (int16_t)(
+        ballPositionCmToPixel(control_data.target_cm) + 0.5f);
+    sample->desired_angle_x100 = (int16_t)(
+        control_data.desired_rod_angle_deg * 100.0f);
+    sample->rod_angle_x100 = (int16_t)(
+        control_data.rod_angle_deg * 100.0f);
+    sample->motor_speed_x10 = (int16_t)(
+        control_data.motor_speed_command_rpm * 10.0f);
+    sample->state = (uint8_t)control_data.state;
+    sample->sequence = (uint8_t)control_data.sequence;
+    ball_telemetry_write_count++;
+    if (control_data.sequence_complete)
+        ball_telemetry_frozen = true;
 }
 
 static void trackStart(uint32_t start_tick)
 {
     float requested_ball_target = 0.0f;
+    float latest_ball_position;
+    float start_position_error;
+    uint32_t latest_ball_tick;
+    uint32_t now_tick;
     bool ball_start_ok = true;
 
     chassis.set_velocity(&chassis, 0.0f, 0.0f);
+    if (mode == ROBOT_MODE_REQUIREMENT_3)
+    {
+        taskENTER_CRITICAL();
+        latest_ball_position = ball_real;
+        latest_ball_tick = ball_host_last_frame_tick;
+        taskEXIT_CRITICAL();
+        now_tick = HAL_GetTick();
+        start_position_error = latest_ball_position - ball_target;
+        if (start_position_error < 0.0f)
+            start_position_error = -start_position_error;
+        if ((latest_ball_tick == 0U) ||
+            ((now_tick - latest_ball_tick) >
+             BALL_MODE3_START_MAX_AGE_MS) ||
+            ((latest_ball_position != BALL_HOST_INVALID_POSITION) &&
+             ((!ballPositionPixelValid(latest_ball_position)) ||
+              (start_position_error >
+               BALL_MODE3_START_TOLERANCE_PX))))
+        {
+            track_elapsed_ms = 0U;
+            track_total_time_ms = 0U;
+            track_timer_stopped = true;
+            ball_control_init_error = 3U;
+            led_red.off(&led_red);
+            return;
+        }
+        if (ball_control_init_error == 3U)
+            ball_control_init_error = 0U;
+    }
     chassis.reset_odometry(&chassis);
     track.pid.reset(&track.pid);
     taskENTER_CRITICAL();
@@ -1176,19 +1325,19 @@ static void trackStart(uint32_t start_tick)
     track_finish_reverse_active = false;
     track_finish_reverse_start_distance_m = 0.0f;
     track_finish_reverse_start_tick = 0U;
-    track_telemetry_write_count = 0U;
-    track_telemetry_last_tick =
-        start_tick + TRACK_TELEMETRY_START_DELAY_MS -
-        TRACK_TELEMETRY_PERIOD_MS;
+    ball_telemetry_write_count = 0U;
+    ball_telemetry_last_tick =
+        start_tick - BALL_TELEMETRY_PERIOD_MS;
+    ball_telemetry_frozen = false;
 
     if (mode == ROBOT_MODE_REQUIREMENT_3)
     {
         ball_start_ok = ball_control.start(
             &ball_control,
             BALL_PROFILE_REQUIREMENT3,
-            0.0f,
-            target_5cm,
-            target_f5cm,
+            ballPositionPixelToCm(ball_target),
+            ballPositionPixelToCm(target_5cm),
+            ballPositionPixelToCm(target_f5cm),
             start_tick);
     }
     else if (!trackOnlyTestModeActive() &&
@@ -1202,9 +1351,9 @@ static void trackStart(uint32_t start_tick)
         ball_start_ok = ball_control.start(
             &ball_control,
             BALL_PROFILE_HOLD,
-            requested_ball_target,
-            target_5cm,
-            target_f5cm,
+            ballPositionPixelToCm(requested_ball_target),
+            ballPositionPixelToCm(target_5cm),
+            ballPositionPixelToCm(target_f5cm),
             start_tick);
     }
 
@@ -1235,7 +1384,6 @@ static void trackStop(uint32_t stop_tick)
     {
         ball_control.stop(&ball_control);
     }
-    trackCaptureTelemetry(stop_tick);
     track.pid.reset(&track.pid);
     track_forward_speed_command = 0.0f;
     taskENTER_CRITICAL();
@@ -1369,6 +1517,25 @@ static float trackWrapAngleRad(float angle_rad)
     while (angle_rad < -3.14159265f)
         angle_rad += 6.28318531f;
     return angle_rad;
+}
+
+static bool ballPositionPixelValid(float position_px)
+{
+    return (position_px == position_px) &&
+           (position_px >= BALL_POSITION_MIN_PX) &&
+           (position_px <= BALL_POSITION_MAX_PX);
+}
+
+static float ballPositionPixelToCm(float position_px)
+{
+    return (BALL_POSITION_CENTER_PX - position_px) /
+           BALL_POSITION_PIXELS_PER_CM;
+}
+
+static float ballPositionCmToPixel(float position_cm)
+{
+    return BALL_POSITION_CENTER_PX -
+           position_cm * BALL_POSITION_PIXELS_PER_CM;
 }
 
 void UART_IMU0_INST_IRQHandler(void)
@@ -1908,12 +2075,12 @@ static void ballControlInit(void)
     const BallControlInitConfig_t ball_control_config = {
         .motor = &zdt42_motor,
         .position_pid = {
-            .kp = 0.8f,
+            .kp = 0.90f,
             .ki = 0.0f,
-            .kd = 0.08f,
+            .kd = 0.15f,
             .enable_output_limit = true,
-            .output_min = -5.0f,
-            .output_max = 5.0f,
+            .output_min = -3.50f,
+            .output_max = 3.50f,
             .enable_integral_limit = true,
             .integral_min = -1.0f,
             .integral_max = 1.0f,
@@ -1923,12 +2090,12 @@ static void ballControlInit(void)
             .reset_integral_on_deadband = true,
         },
         .angle_pid = {
-            .kp = 15.0f,
+            .kp = 0.60f,
             .ki = 0.0f,
-            .kd = 0.20f,
+            .kd = 0.03f,
             .enable_output_limit = true,
-            .output_min = -120.0f,
-            .output_max = 120.0f,
+            .output_min = -8.0f,
+            .output_max = 8.0f,
             .enable_integral_limit = true,
             .integral_min = -20.0f,
             .integral_max = 20.0f,
@@ -1937,23 +2104,45 @@ static void ballControlInit(void)
             .derivative_on_measurement = true,
             .reset_integral_on_deadband = true,
         },
-        .motor_to_rod_ratio = 1.0f,
-        .motor_direction = 1.0f,
+        /* Quadratic fit of H42 CAD linkage, rod_deg = a*x + b*x^2. */
+        .motor_to_rod_positive_linear = 8.425f,
+        .motor_to_rod_positive_quadratic = -1.758f,
+        .motor_to_rod_negative_linear = 8.171f,
+        .motor_to_rod_negative_quadratic = 11.347f,
+        .motor_direction = -1.0f,
+        .position_to_rod_direction = -1.0f,
+        .minimum_motor_offset_deg = -0.32f,
+        .maximum_motor_offset_deg = 1.55f,
         .maximum_target_cm = 12.0f,
-        .maximum_rod_angle_deg = 5.0f,
-        .maximum_motor_speed_rpm = 120.0f,
+        .maximum_rod_angle_deg = 9.00f,
+        .maximum_motor_speed_rpm = 8.0f,
         .motor_speed_slew_rpm_per_s = 400.0f,
         .measurement_velocity_filter_s = 0.08f,
-        .prediction_horizon_s = 0.0f,
+        .prediction_horizon_s = 0.015f,
         .sequence_tolerance_cm = 0.8f,
-        .motor_acceleration = 10U,
-        .control_period_ms = 10U,
-        .motor_command_period_ms = 20U,
-        .motor_feedback_period_ms = 20U,
-        .motor_feedback_timeout_ms = 120U,
-        .measurement_timeout_ms = 200U,
+        .minimum_drive_angle_deg = 9.00f,
+        .minimum_drive_error_cm = 1.0f,
+        .minimum_drive_velocity_cm_s = 1.0f,
+        .stall_position_epsilon_cm = 0.25f,
+        .disturbance_angle_deg = 9.00f,
+        .lost_search_angle_deg = 9.00f,
+        .return_ball_tolerance_cm = 0.8f,
+        .return_tolerance_deg = 0.25f,
+        .motor_acceleration = 0U,
+        .control_period_ms = 5U,
+        .motor_command_period_ms = 5U,
+        .motor_feedback_period_ms = 5U,
+        .motor_feedback_timeout_ms = 40U,
+        .measurement_timeout_ms = 120U,
         .arming_timeout_ms = 800U,
-        .sequence_hold_ms = 200U,
+        .sequence_hold_ms = 250U,
+        .stall_detection_ms = 300U,
+        .disturbance_duration_ms = 300U,
+        .lost_search_step_ms = 400U,
+        .lost_search_timeout_ms = 4000U,
+        .return_ball_hold_ms = 300U,
+        .return_hold_ms = 200U,
+        .return_timeout_ms = 15000U,
     };
 
     if (!ball_control.init(&ball_control, &ball_control_config))

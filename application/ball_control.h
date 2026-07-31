@@ -14,6 +14,7 @@ typedef enum
     BALL_CONTROL_IDLE = 0,
     BALL_CONTROL_ARMING,
     BALL_CONTROL_ACTIVE,
+    BALL_CONTROL_RETURNING,
     BALL_CONTROL_FAULT,
 } BallControlState_t;
 
@@ -36,8 +37,14 @@ typedef struct
     Zdt42_t *motor;
     PidInitConfig_t position_pid;
     PidInitConfig_t angle_pid;
-    float motor_to_rod_ratio;
+    float motor_to_rod_positive_linear;
+    float motor_to_rod_positive_quadratic;
+    float motor_to_rod_negative_linear;
+    float motor_to_rod_negative_quadratic;
     float motor_direction;
+    float position_to_rod_direction;
+    float minimum_motor_offset_deg;
+    float maximum_motor_offset_deg;
     float maximum_target_cm;
     float maximum_rod_angle_deg;
     float maximum_motor_speed_rpm;
@@ -45,6 +52,14 @@ typedef struct
     float measurement_velocity_filter_s;
     float prediction_horizon_s;
     float sequence_tolerance_cm;
+    float minimum_drive_angle_deg;
+    float minimum_drive_error_cm;
+    float minimum_drive_velocity_cm_s;
+    float stall_position_epsilon_cm;
+    float disturbance_angle_deg;
+    float lost_search_angle_deg;
+    float return_ball_tolerance_cm;
+    float return_tolerance_deg;
     uint8_t motor_acceleration;
     uint16_t control_period_ms;
     uint16_t motor_command_period_ms;
@@ -53,6 +68,13 @@ typedef struct
     uint16_t measurement_timeout_ms;
     uint16_t arming_timeout_ms;
     uint16_t sequence_hold_ms;
+    uint16_t stall_detection_ms;
+    uint16_t disturbance_duration_ms;
+    uint16_t lost_search_step_ms;
+    uint16_t lost_search_timeout_ms;
+    uint16_t return_ball_hold_ms;
+    uint16_t return_hold_ms;
+    uint16_t return_timeout_ms;
 } BallControlInitConfig_t;
 
 typedef struct
@@ -67,14 +89,19 @@ typedef struct
     float desired_rod_angle_deg;
     float rod_angle_deg;
     float motor_speed_command_rpm;
+    float motor_offset_deg;
     float motor_zero_deg;
     uint32_t start_tick;
     uint32_t completion_time_ms;
     uint32_t measurement_tick;
     uint32_t update_count;
+    uint32_t position_update_count;
+    uint32_t angle_update_count;
     uint32_t command_count;
     uint32_t command_error_count;
     uint32_t stale_count;
+    uint32_t disturbance_count;
+    uint32_t return_timeout_count;
     bool measurement_valid;
     bool measurement_stale;
     bool sequence_complete;
@@ -94,13 +121,27 @@ struct BallControl
     float negative_target_cm;
     float previous_measurement_cm;
     float previous_speed_command_rpm;
+    float desired_angle_command_deg;
+    float requested_speed_command_rpm;
+    float stall_reference_cm;
     uint32_t previous_measurement_tick;
+    uint32_t last_outer_measurement_tick;
+    uint32_t last_inner_feedback_tick;
     uint32_t last_update_tick;
     uint32_t last_command_tick;
     uint32_t last_feedback_request_tick;
     uint32_t last_position_feedback_tick;
     uint32_t sequence_inside_tick;
+    uint32_t stall_reference_tick;
+    uint32_t disturbance_start_tick;
+    uint32_t measurement_stale_start_tick;
+    uint32_t return_start_tick;
+    uint32_t return_inside_tick;
     bool sequence_inside;
+    bool disturbance_active;
+    bool return_inside;
+    bool return_leveling;
+    bool return_forced_level;
 
     bool (*init)(BallControl_t *control,
                  const BallControlInitConfig_t *config);
