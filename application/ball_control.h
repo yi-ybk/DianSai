@@ -14,7 +14,6 @@ typedef enum
     BALL_CONTROL_IDLE = 0,
     BALL_CONTROL_ARMING,
     BALL_CONTROL_ACTIVE,
-    BALL_CONTROL_RETURNING,
     BALL_CONTROL_FAULT,
 } BallControlState_t;
 
@@ -49,13 +48,6 @@ typedef struct
     uint16_t motor_command_period_ms;
     uint16_t measurement_timeout_ms;
     uint16_t sequence_hold_ms;
-    uint16_t stall_detection_ms;
-    uint16_t disturbance_duration_ms;
-    uint16_t lost_search_step_ms;
-    uint16_t lost_search_timeout_ms;
-    uint16_t return_ball_hold_ms;
-    uint16_t return_hold_ms;
-    uint16_t return_timeout_ms;
 } BallControlInitConfig_t;
 
 typedef struct
@@ -74,13 +66,9 @@ typedef struct
     uint32_t completion_time_ms;
     uint32_t measurement_tick;
     uint32_t update_count;
-    uint32_t position_update_count;
-    uint32_t angle_update_count;
     uint32_t command_count;
     uint32_t command_error_count;
     uint32_t stale_count;
-    uint32_t disturbance_count;
-    uint32_t return_timeout_count;
     bool measurement_valid;
     bool measurement_stale;
     bool sequence_complete;
@@ -100,21 +88,10 @@ struct BallControl
     float previous_measurement_cm;
     float previous_servo_angle_deg;
     uint32_t previous_measurement_tick;
-    uint32_t last_outer_measurement_tick;
-    uint32_t last_inner_feedback_tick;
     uint32_t last_update_tick;
     uint32_t last_command_tick;
     uint32_t sequence_inside_tick;
-    uint32_t stall_reference_tick;
-    uint32_t disturbance_start_tick;
-    uint32_t measurement_stale_start_tick;
-    uint32_t return_start_tick;
-    uint32_t return_inside_tick;
     bool sequence_inside;
-    bool disturbance_active;
-    bool return_inside;
-    bool return_leveling;
-    bool return_forced_level;
 
     bool (*init)(BallControl_t *control,
                  const BallControlInitConfig_t *config);

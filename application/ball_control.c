@@ -16,12 +16,7 @@ bool BallControlInit(BallControl_t *control,
                      const BallControlInitConfig_t *config)
 {
     if ((control == NULL) || (config == NULL) || (config->motor == NULL) ||
-        (config->motor_to_rod_positive_linear <= 0.0f) ||
-        (config->motor_to_rod_negative_linear <= 0.0f) ||
-        (!BallFinite(config->motor_to_rod_positive_quadratic)) ||
-        (!BallFinite(config->motor_to_rod_negative_quadratic)) ||
-        (config->minimum_motor_offset_deg >= 0.0f) ||
-        (config->maximum_motor_offset_deg <= 0.0f) ||
+        (config->motor_to_rod_ratio <= 0.0f) ||
         (config->maximum_target_cm <= 0.0f) ||
         (config->maximum_rod_angle_deg <= 0.0f) ||
         (!config->motor->initialized) ||
@@ -32,24 +27,9 @@ bool BallControlInit(BallControl_t *control,
          config->motor->init_config.servo_max_angle) ||
         (config->maximum_servo_slew_deg_per_s <= 0.0f) ||
         (BallAbs(config->motor_direction) < 0.5f) ||
-        (BallAbs(config->position_to_rod_direction) < 0.5f) ||
         (config->measurement_velocity_filter_s < 0.0f) ||
         (config->prediction_horizon_s < 0.0f) ||
         (config->sequence_tolerance_cm <= 0.0f) ||
-        (config->minimum_drive_angle_deg <= 0.0f) ||
-        (config->minimum_drive_angle_deg >
-         config->maximum_rod_angle_deg) ||
-        (config->minimum_drive_error_cm <= 0.0f) ||
-        (config->minimum_drive_velocity_cm_s <= 0.0f) ||
-        (config->stall_position_epsilon_cm <= 0.0f) ||
-        (config->disturbance_angle_deg <= 0.0f) ||
-        (config->disturbance_angle_deg >
-         config->maximum_rod_angle_deg) ||
-        (config->lost_search_angle_deg <= 0.0f) ||
-        (config->lost_search_angle_deg >
-         config->maximum_rod_angle_deg) ||
-        (config->return_ball_tolerance_cm <= 0.0f) ||
-        (config->return_tolerance_deg <= 0.0f) ||
         (config->control_period_ms == 0U) ||
         (config->motor_command_period_ms < config->control_period_ms) ||
         (config->measurement_timeout_ms == 0U) ||
@@ -89,7 +69,6 @@ bool BallControlStart(BallControl_t *control,
                       uint32_t now_tick)
 {
     if ((control == NULL) || (!control->initialized) ||
-        (control->data.state != BALL_CONTROL_IDLE) ||
         (profile > BALL_PROFILE_REQUIREMENT3) ||
         !BallFinite(hold_target_cm) ||
         !BallFinite(positive_target_cm) ||
@@ -118,16 +97,6 @@ bool BallControlStart(BallControl_t *control,
     control->last_command_tick = now_tick;
     control->sequence_inside_tick = 0U;
     control->sequence_inside = false;
-    control->stall_reference_cm = control->data.measured_cm;
-    control->stall_reference_tick = now_tick;
-    control->disturbance_start_tick = 0U;
-    control->measurement_stale_start_tick = 0U;
-    control->disturbance_active = false;
-    control->return_start_tick = 0U;
-    control->return_inside_tick = 0U;
-    control->return_inside = false;
-    control->return_leveling = false;
-    control->return_forced_level = false;
 
     taskENTER_CRITICAL();
     control->data.profile = profile;
@@ -156,8 +125,6 @@ bool BallControlStart(BallControl_t *control,
 
 void BallControlStop(BallControl_t *control)
 {
-    uint32_t now_tick;
-
     if ((control == NULL) || (!control->initialized))
         return;
 
@@ -242,48 +209,31 @@ void BallControlSetMeasurement(BallControl_t *control,
 void BallControlUpdate(BallControl_t *control, uint32_t now_tick)
 {
     BallControlData_t snapshot;
+    float dt_s;
     float predicted_cm;
     float desired_angle_deg;
     float servo_angle_deg;
     float maximum_step;
-    float motor_offset_deg;
-    float angle_error_deg;
-    float position_error_cm;
-    float outer_dt_s;
-    float inner_dt_s;
     bool measurement_stale;
-    bool new_measurement;
-    bool new_motor_feedback;
-    bool returning;
 
-    if ((control == NULL) || (!control->initialized))
+    if ((control == NULL) || (!control->initialized) ||
+        (control->data.state == BALL_CONTROL_IDLE) ||
+        (control->data.state == BALL_CONTROL_FAULT))
     {
         return;
     }
-
-    if (control->data.state == BALL_CONTROL_IDLE)
-    {
-        if ((now_tick - control->last_feedback_request_tick) >= 100U)
-        {
-            control->last_feedback_request_tick = now_tick;
-            (void)control->init_config.motor->read_parameter(
-                control->init_config.motor, ZDT42_PARAM_POSITION);
-        }
-        return;
-    }
-    if (control->data.state == BALL_CONTROL_FAULT)
-        return;
 
     if ((now_tick - control->last_update_tick) <
         control->init_config.control_period_ms)
     {
         return;
     }
+    dt_s = (float)(now_tick - control->last_update_tick) * 0.001f;
+    if (dt_s > 0.05f)
+        dt_s = 0.05f;
     control->last_update_tick = now_tick;
 
-    returning = control->data.state == BALL_CONTROL_RETURNING;
-    if (!returning)
-        BallUpdateSequence(control, now_tick);
+    BallUpdateSequence(control, now_tick);
     taskENTER_CRITICAL();
     snapshot = control->data;
     taskEXIT_CRITICAL();
@@ -293,145 +243,19 @@ void BallControlUpdate(BallControl_t *control, uint32_t now_tick)
         ((now_tick - snapshot.measurement_tick) >
          control->init_config.measurement_timeout_ms);
     predicted_cm = snapshot.measured_cm;
-    new_measurement =
-        (!measurement_stale) &&
-        (snapshot.measurement_tick !=
-         control->last_outer_measurement_tick);
-    if (returning && control->return_leveling)
+    if (!measurement_stale)
     {
-        desired_angle_deg = 0.0f;
-        predicted_cm = snapshot.measured_cm;
-        control->desired_angle_command_deg = 0.0f;
-        control->position_pid.reset(&control->position_pid);
-    }
-    else if (new_measurement)
-    {
-        outer_dt_s =
-            control->last_outer_measurement_tick == 0U ?
-            (float)control->init_config.control_period_ms * 0.001f :
-            (float)(snapshot.measurement_tick -
-                    control->last_outer_measurement_tick) * 0.001f;
-        if (outer_dt_s < 0.005f)
-            outer_dt_s = 0.005f;
-        if (outer_dt_s > 0.10f)
-            outer_dt_s = 0.10f;
         predicted_cm += snapshot.measured_velocity_cm_s *
                         control->init_config.prediction_horizon_s;
         desired_angle_deg = control->position_pid.calculate(
             &control->position_pid,
             predicted_cm,
             snapshot.target_cm,
-            outer_dt_s);
-        desired_angle_deg *=
-            control->init_config.position_to_rod_direction;
-        desired_angle_deg = BallClamp(
-            desired_angle_deg,
-            -control->init_config.maximum_rod_angle_deg,
-            control->init_config.maximum_rod_angle_deg);
-        position_error_cm = snapshot.target_cm - predicted_cm;
-        if ((BallAbs(position_error_cm) >=
-             control->init_config.minimum_drive_error_cm) &&
-            (BallAbs(snapshot.measured_velocity_cm_s) <=
-             control->init_config.minimum_drive_velocity_cm_s) &&
-            ((desired_angle_deg * position_error_cm *
-              control->init_config.position_to_rod_direction) > 0.0f) &&
-            (BallAbs(desired_angle_deg) <
-             control->init_config.minimum_drive_angle_deg))
-        {
-            desired_angle_deg = (position_error_cm > 0.0f ?
-                control->init_config.minimum_drive_angle_deg :
-                -control->init_config.minimum_drive_angle_deg) *
-                control->init_config.position_to_rod_direction;
-        }
-        if ((!returning) &&
-            (BallAbs(position_error_cm) >
-             control->init_config.sequence_tolerance_cm))
-        {
-            if (BallAbs(snapshot.measured_cm -
-                        control->stall_reference_cm) >=
-                control->init_config.stall_position_epsilon_cm)
-            {
-                control->stall_reference_cm = snapshot.measured_cm;
-                control->stall_reference_tick = now_tick;
-            }
-            else if ((!control->disturbance_active) &&
-                     ((now_tick - control->stall_reference_tick) >=
-                      control->init_config.stall_detection_ms))
-            {
-                control->disturbance_active = true;
-                control->disturbance_start_tick = now_tick;
-                control->data.disturbance_count++;
-                control->position_pid.reset(&control->position_pid);
-            }
-
-            if (control->disturbance_active)
-            {
-                if ((now_tick - control->disturbance_start_tick) <
-                    control->init_config.disturbance_duration_ms)
-                {
-                    desired_angle_deg = (position_error_cm > 0.0f ?
-                        control->init_config.disturbance_angle_deg :
-                        -control->init_config.disturbance_angle_deg) *
-                        control->init_config.position_to_rod_direction;
-                }
-                else
-                {
-                    control->disturbance_active = false;
-                    control->stall_reference_cm = snapshot.measured_cm;
-                    control->stall_reference_tick = now_tick;
-                    control->position_pid.reset(&control->position_pid);
-                }
-            }
-        }
-        else
-        {
-            control->disturbance_active = false;
-            control->stall_reference_cm = snapshot.measured_cm;
-            control->stall_reference_tick = now_tick;
-        }
-        control->desired_angle_command_deg = desired_angle_deg;
-        control->measurement_stale_start_tick = 0U;
-        control->last_outer_measurement_tick =
-            snapshot.measurement_tick;
-        control->data.position_update_count++;
+            dt_s);
     }
-    else if (measurement_stale)
+    else
     {
-        if ((!returning) &&
-            (control->data.state == BALL_CONTROL_ACTIVE))
-        {
-            uint32_t stale_elapsed_ms;
-            uint32_t search_phase;
-            float search_direction = 1.0f;
-
-            if (control->measurement_stale_start_tick == 0U)
-                control->measurement_stale_start_tick = now_tick;
-            stale_elapsed_ms =
-                now_tick - control->measurement_stale_start_tick;
-            if (snapshot.measurement_valid &&
-                ((snapshot.target_cm - snapshot.measured_cm) < 0.0f))
-            {
-                search_direction = -1.0f;
-            }
-            search_direction *=
-                control->init_config.position_to_rod_direction;
-            search_phase = stale_elapsed_ms /
-                control->init_config.lost_search_step_ms;
-            if ((search_phase & 1U) != 0U)
-                search_direction = -search_direction;
-            desired_angle_deg =
-                stale_elapsed_ms <
-                control->init_config.lost_search_timeout_ms ?
-                search_direction *
-                    control->init_config.lost_search_angle_deg :
-                0.0f;
-            control->desired_angle_command_deg = desired_angle_deg;
-        }
-        else
-        {
-            desired_angle_deg = 0.0f;
-            control->desired_angle_command_deg = 0.0f;
-        }
+        desired_angle_deg = 0.0f;
         control->position_pid.reset(&control->position_pid);
     }
 
