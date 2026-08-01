@@ -37,7 +37,6 @@ D:\DianSai\m0\m0\freertos_builds_LP_MSPM0G3507_release_ticlang
 | `CCS: Build Debug` | 增量编译 Debug |
 | `CCS: Full Build Debug` | 完整重新编译 Debug |
 | `J-Link: Flash Debug` | 直接烧录现有 Debug 输出 |
-| `J-Link: 读取循迹RAM` | 不复位、不重烧，读取循迹轨迹并生成 CSV/JSON |
 | `MSPM0: 一键编译并烧录` | 完整编译成功后自动烧录、校验并复位 |
 
 默认构建快捷键 `Ctrl+Shift+B` 对应 `MSPM0: 一键编译并烧录`。
@@ -79,15 +78,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .vscode\jlink-flash.ps1
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .vscode\jlink-flash.ps1 -DryRun
 ```
-
-读取循迹 RAM（运行结束后保持开发板供电，且不要按复位键）：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .vscode\read-track-ram.ps1
-```
-
-脚本只暂停 CPU、读取 `track_trace_store` 和 `track_debug_state`，随后恢复运行；
-不会执行复位或重新烧录。输出保存在 `Debug\track-trace-时间戳.csv/json`。
 
 ## 烧录连接
 

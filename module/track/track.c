@@ -35,8 +35,6 @@ float TrackCalculateError(Track_t *track)
 {
     uint32_t black_mask;
     uint32_t raw_black_mask;
-    uint32_t run_black_mask = 0U;
-    uint32_t selected_black_mask = 0U;
     uint8_t channel;
     float run_error_sum = 0.0f;
     float run_error;
@@ -58,7 +56,6 @@ float TrackCalculateError(Track_t *track)
     last_normalized_error = track->data.normalized_error;
     raw_black_mask =
         track->gray->get_black_mask((Gray_t *)track->gray);
-    track->data.raw_black_mask = raw_black_mask;
     if (track->data.black_history_count < 3U)
     {
         track->data.black_mask_history[track->data.black_history_count] =
@@ -81,17 +78,12 @@ float TrackCalculateError(Track_t *track)
             (track->data.black_mask_history[1] &
              track->data.black_mask_history[2]);
     }
-    track->data.selection_flags = 0U;
-    if (black_mask != raw_black_mask)
-        track->data.selection_flags |= TRACK_SELECTION_FLAG_RAW_FILTERED;
-
     for (channel = 0U; channel <= track->init_config.channel_count; ++channel)
     {
         if ((channel < track->init_config.channel_count) &&
             (black_mask & (1UL << channel)))
         {
             run_error_sum += track->init_config.weights[channel];
-            run_black_mask |= 1UL << channel;
             run_black_count++;
             continue;
         }
@@ -111,13 +103,11 @@ float TrackCalculateError(Track_t *track)
             {
                 selected_error = run_error;
                 selected_black_count = run_black_count;
-                selected_black_mask = run_black_mask;
                 best_run_distance = run_distance;
                 run_selected = true;
             }
 
             run_error_sum = 0.0f;
-            run_black_mask = 0U;
             run_black_count = 0U;
         }
     }
@@ -164,14 +154,10 @@ float TrackCalculateError(Track_t *track)
                 direction_change_confirm_samples)
             {
                 selected_error = last_normalized_error;
-                track->data.selection_flags |=
-                    TRACK_SELECTION_FLAG_DIRECTION_HELD;
             }
             else
             {
                 direction_change_confirmed = true;
-                track->data.selection_flags |=
-                    TRACK_SELECTION_FLAG_DIRECTION_CONFIRMED;
                 track->data.direction_change_count = 0U;
             }
         }
@@ -202,9 +188,6 @@ float TrackCalculateError(Track_t *track)
              */
             run_selected = false;
             selected_black_count = 0U;
-            selected_black_mask = 0U;
-            track->data.selection_flags |=
-                TRACK_SELECTION_FLAG_JUMP_REJECTED;
         }
     }
     else
@@ -214,8 +197,6 @@ float TrackCalculateError(Track_t *track)
 
     track->data.black_mask = black_mask;
     track->data.black_count = selected_black_count;
-    track->data.black_run_count = black_run_count;
-    track->data.selected_black_mask = selected_black_mask;
 
     if (run_selected)
     {
