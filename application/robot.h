@@ -17,7 +17,7 @@ typedef struct
     float integral_limit_px_s;            /**< 积分绝对值上限(px*s) */
     float derivative_filter_tau_s;        /**< 测量速度低通滤波时间常数(s) */
     float deadband_px;                    /**< 位置误差死区(px) */
-    float acceleration_ff_gain;           /**< 小车纵向加速度前馈增益(deg/(m/s^2))，允许用正负号修正方向 */
+    float acceleration_ff_gain;           /**< 目标加速度前馈增益(deg/(px/s^2)) */
     float breakaway_angle_deg;            /**< 小球静止时的启动力前馈角度 */
     float breakaway_error_px;             /**< 启动力前馈的最小位置误差 */
     float breakaway_speed_px_s;            /**< 判定小球静止的速度阈值 */
@@ -40,14 +40,13 @@ typedef struct
     float dt_s;
     uint32_t update_count;
     uint32_t reset_count;
-    float chassis_acceleration_mps2;       /**< 当前送入前馈的小车指令加速度(m/s^2) */
 } BallPidRamState_t;
 
 extern volatile BallPidRamConfig_t ball_pid_ram;
 extern volatile BallPidRamState_t ball_pid_state;
 extern volatile uint32_t ball_pid_reset_request;
 extern volatile float ball_target;
-extern volatile float ball_chassis_acceleration_mps2;
+extern volatile float ball_target_acceleration_px_s2;
 extern volatile float ball_real;
 extern volatile float now_angel;
 

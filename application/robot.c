@@ -53,7 +53,7 @@ static void chassisInit(void);
 static void gpioInterruptDispatch(GPIO_TypeDef *GPIOx);
 static float ballPidUpdate(float target_px,
                            float measured_px,
-                           float chassis_acceleration_mps2,
+                           float target_acceleration_px_s2,
                            float dt_s);
 static void ballPidReset(void);
 static void ballPidGetConfig(BallPidRamConfig_t *config);
@@ -170,7 +170,7 @@ Slaver_t ball_position_receiver = { SLAVER_OBJECT_DEFAULT };
 static SlaverSimpleFloatProtocol_t ball_position_protocol;
 
 volatile float ball_target = 150.0f;
-volatile float ball_chassis_acceleration_mps2 = 0.0f;
+volatile float ball_target_acceleration_px_s2 = 0.0f;
 volatile float ball_real = 0.0f;
 
 #define ROBOT_MODE_REQUIREMENT_3          3U
@@ -336,7 +336,7 @@ volatile BallPidRamConfig_t ball_pid_ram = {
     .integral_limit_px_s = 30.0f,
     .derivative_filter_tau_s = 0.05f,
     .deadband_px = 1.5f,
-    .acceleration_ff_gain = 2.0f,
+    .acceleration_ff_gain = 0.0f,
     .breakaway_angle_deg = 0.1f,
     .breakaway_error_px = 4.0f,
     .breakaway_speed_px_s = 10.0f,
@@ -382,7 +382,6 @@ static void chassisControlTask(void *argument)
     bool camera_control_active = false;
 
     (void)argument;
-    /* 平衡闭环独立于循迹模式；上电后首个有效相机坐标到达即开始控制。 */
     motor_ball_servo.set_angle(&motor_ball_servo,
                                BALL_SERVO_CENTER_ANGLE_DEG);
     while (1)
@@ -390,7 +389,7 @@ static void chassisControlTask(void *argument)
         BallPidRamConfig_t config;
         float camera_position_px;
         float target_position_px;
-        float chassis_acceleration_mps2;
+        float target_acceleration_px_s2;
         uint32_t camera_frame_tick;
         uint32_t now_tick;
         bool camera_data_usable;
@@ -398,7 +397,7 @@ static void chassisControlTask(void *argument)
         taskENTER_CRITICAL();
         camera_position_px = ball_real;
         target_position_px = ball_target;
-        chassis_acceleration_mps2 = ball_chassis_acceleration_mps2;
+        target_acceleration_px_s2 = ball_target_acceleration_px_s2;
         camera_frame_tick = ball_host_last_frame_tick;
         taskEXIT_CRITICAL();
 
@@ -436,7 +435,7 @@ static void chassisControlTask(void *argument)
             /* camera_position_px 就是相机识别到的像素坐标 */
             now_angel = ballPidUpdate(target_position_px,
                                       camera_position_px,
-                                      chassis_acceleration_mps2,
+                                      target_acceleration_px_s2,
                                       frame_dt_s);
             motor_ball_servo.set_angle(&motor_ball_servo, now_angel);
             last_processed_camera_tick = camera_frame_tick;
@@ -466,7 +465,7 @@ static void chassisControlTask(void *argument)
 
 static float ballPidUpdate(float target_px,
                            float measured_px,
-                           float chassis_acceleration_mps2,
+                           float target_acceleration_px_s2,
                            float dt_s)
 {
     BallPidRamConfig_t config;
@@ -489,8 +488,8 @@ static float ballPidUpdate(float target_px,
                            BALL_PID_DEFAULT_DT_S,
                            BALL_PID_MIN_DT_S,
                            BALL_PID_MAX_DT_S);
-    chassis_acceleration_mps2 = ballPidSanitize(
-        chassis_acceleration_mps2, 0.0f, -5.0f, 5.0f);
+    target_acceleration_px_s2 = ballPidSanitize(
+        target_acceleration_px_s2, 0.0f, -10000.0f, 10000.0f);
 
     error_px = target_px - measured_px;
     if (ballPidAbs(error_px) <= config.deadband_px)
@@ -528,7 +527,7 @@ static float ballPidUpdate(float target_px,
     integral_deg = config.ki * candidate_integral_px_s;
     derivative_deg = -config.kd * ball_pid_filtered_speed_px_s;
     acceleration_feedforward_deg = ballPidClamp(
-        config.acceleration_ff_gain * chassis_acceleration_mps2,
+        config.acceleration_ff_gain * target_acceleration_px_s2,
         -BALL_PID_MAX_ACCELERATION_FF_DEG,
         BALL_PID_MAX_ACCELERATION_FF_DEG);
 
@@ -586,8 +585,6 @@ static float ballPidUpdate(float target_px,
     ball_pid_state.unsaturated_angle_deg = unsaturated_angle_deg;
     ball_pid_state.command_angle_deg = command_angle_deg;
     ball_pid_state.dt_s = dt_s;
-    ball_pid_state.chassis_acceleration_mps2 =
-        chassis_acceleration_mps2;
     ball_pid_state.update_count++;
 
     return command_angle_deg;
@@ -610,7 +607,6 @@ static void ballPidReset(void)
     ball_pid_state.unsaturated_angle_deg = now_angel;
     ball_pid_state.command_angle_deg = now_angel;
     ball_pid_state.dt_s = 0.0f;
-    ball_pid_state.chassis_acceleration_mps2 = 0.0f;
     ball_pid_state.reset_count++;
     ball_pid_reset_request = 0U;
 }
@@ -656,7 +652,7 @@ static void ballPidGetConfig(BallPidRamConfig_t *config)
     config->deadband_px = ballPidSanitize(
         ball_pid_ram.deadband_px, 1.5f, 0.0f, 50.0f);
     config->acceleration_ff_gain = ballPidSanitize(
-        ball_pid_ram.acceleration_ff_gain, 2.0f, -10.0f, 10.0f);
+        ball_pid_ram.acceleration_ff_gain, 0.0f, -1.0f, 1.0f);
     config->breakaway_angle_deg = ballPidSanitize(
         ball_pid_ram.breakaway_angle_deg, 0.0f, 0.0f, 3.0f);
     config->breakaway_error_px = ballPidSanitize(
@@ -1005,7 +1001,6 @@ static void trackTask(void *argument)
         else
         {
             last_control_tick = 0U;
-            ball_chassis_acceleration_mps2 = 0.0f;
             chassis.set_velocity(&chassis, 0.0f, 0.0f);
         }
         osDelay(5);
@@ -1400,7 +1395,6 @@ static void trackStart(uint32_t start_tick)
     taskEXIT_CRITICAL();
     track_slow_until_tick = start_tick;
     track_forward_speed_command = 0.0f;
-    ball_chassis_acceleration_mps2 = 0.0f;
     requirement4_curve_detect_count = 0U;
     track_finish_line_detect_count = 0U;
     track_finish_last_mask = 0U;
@@ -1434,7 +1428,6 @@ static void trackStop(uint32_t stop_tick)
     track_stop_distance_m = chassis_data.distance_m;
     track.pid.reset(&track.pid);
     track_forward_speed_command = 0.0f;
-    ball_chassis_acceleration_mps2 = 0.0f;
     taskENTER_CRITICAL();
     if (!track_timer_stopped)
         track_elapsed_ms = stop_tick - track_start_tick;
@@ -1518,7 +1511,6 @@ static float trackLimitForwardSpeed(float requested_speed_mps)
 static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s)
 {
     float maximum_step;
-    float previous_speed_mps = track_forward_speed_command;
     bool stable_profile = trackModeUsesStableProfile(mode);
     bool ball_lap_profile = trackModeUsesBallLapProfile(mode);
 
@@ -1557,16 +1549,6 @@ static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s)
     }
 
     track_forward_speed_command = target_speed_mps;
-    /* 使用限加减速后的速度指令计算前馈，匀速时自动回零。 */
-    if (stable_profile)
-    {
-        ball_chassis_acceleration_mps2 =
-            (track_forward_speed_command - previous_speed_mps) / dt_s;
-    }
-    else
-    {
-        ball_chassis_acceleration_mps2 = 0.0f;
-    }
     return track_forward_speed_command;
 }
 
