@@ -33,6 +33,7 @@ static bool trackModeUsesStableProfile(uint8_t selected_mode);
 static bool trackModeUsesBallLapProfile(uint8_t selected_mode);
 static bool trackFinishLineDetected(float distance_m);
 static void trackRunRequirement2(uint32_t now_tick, float dt_s);
+static void trackRunRequirement3(uint32_t now_tick);
 static void trackRunRequirement4(uint32_t now_tick, float dt_s);
 static void trackRunRequirement5Or6(uint32_t now_tick, float dt_s);
 static void trackStart(uint32_t start_tick);
@@ -270,8 +271,13 @@ volatile float ball_real = 0.0f;
 #define BALL_POSITION_MIN_PX                  0.0f
 #define BALL_POSITION_MAX_PX                300.0f
 #define BALL_HOST_INVALID_POSITION           -1.0f
-#define BALL_MODE3_START_TOLERANCE_PX         60.0f
 #define BALL_MODE3_START_MAX_AGE_MS          500U
+#define BALL_MODE3_DEFAULT_PIXELS_PER_CM       12.0f
+#define BALL_MODE3_DEFAULT_ENDPOINT_CM          5.0f
+#define BALL_MODE3_DEFAULT_TOLERANCE_CM         0.8f
+#define BALL_MODE3_DEFAULT_HOLD_MS             150U
+#define BALL_MODE3_DEFAULT_FINAL_HOLD_MS       3000U
+#define BALL_MODE3_DEFAULT_TIMEOUT_MS         5000U
 /*
 TRACK_LAP_DISTANCE_M：跑一圈的目标距离，当前约 6.1416m。
 TRACK_FINISH_ARM_DISTANCE_M：接近一圈末段后，才允许识别 A 点终点黑线，避免刚启动就误判。
@@ -372,6 +378,21 @@ volatile BallPidRamConfig_t ball_pid_ram = {
     .maximum_slew_deg_per_s = 60.0f,
 };
 volatile BallPidRamState_t ball_pid_state = {0};
+volatile BallMode3RamConfig_t ball_mode3_ram = {
+    .center_px = 150.0f,
+    .pixels_per_cm = BALL_MODE3_DEFAULT_PIXELS_PER_CM,
+    /* With the current camera axis, increasing physical position reduces X. */
+    .positive_pixel_direction = -1.0f,
+    .endpoint_cm = BALL_MODE3_DEFAULT_ENDPOINT_CM,
+    /* Use 0.8 cm internally to leave margin for the 1 cm judging limit. */
+    .arrival_tolerance_cm = BALL_MODE3_DEFAULT_TOLERANCE_CM,
+    .arrival_hold_ms = BALL_MODE3_DEFAULT_HOLD_MS,
+    .final_hold_ms = BALL_MODE3_DEFAULT_FINAL_HOLD_MS,
+    .timeout_ms = BALL_MODE3_DEFAULT_TIMEOUT_MS,
+};
+volatile BallMode3RamState_t ball_mode3_state = {
+    .phase = BALL_MODE3_IDLE,
+};
 volatile uint32_t ball_pid_reset_request = 0U;
 volatile float now_angel = BALL_SERVO_CENTER_ANGLE_DEG;
 
@@ -817,15 +838,32 @@ static void oledDrawBallPage(void)
     float real;
     float host_fps;
     float host_period_ms;
+    uint32_t display_time_ms;
+    uint32_t mode3_phase;
+    bool mode3_active;
+    bool running;
 
     taskENTER_CRITICAL();
     target = ball_target;
     real = ball_real;
     host_period_ms = ball_host_period_ema_ms;
+    mode3_active = (mode == ROBOT_MODE_REQUIREMENT_3);
+    mode3_phase = ball_mode3_state.phase;
+    running = track_running;
+    display_time_ms = running ? track_elapsed_ms : track_total_time_ms;
     taskEXIT_CRITICAL();
     host_fps = host_period_ms > 0.0f ? 1000.0f / host_period_ms : 0.0f;
 
-    oled.draw_string(&oled, 0, 0, "BALL POSITION", OLED_COLOR_WHITE);
+    if (mode3_active)
+    {
+        oled.draw_string(&oled, 0, 0, "MODE:3 PH:", OLED_COLOR_WHITE);
+        oled.draw_int(&oled, 10, 0, (int32_t)mode3_phase,
+                      OLED_COLOR_WHITE);
+    }
+    else
+    {
+        oled.draw_string(&oled, 0, 0, "BALL POSITION", OLED_COLOR_WHITE);
+    }
     oled.draw_string(&oled, 0, 2, "REAL:", OLED_COLOR_WHITE);
     oled.draw_int(&oled, 6, 2,
                   real < 0.0f ? (int32_t)(real - 0.5f) :
@@ -834,12 +872,23 @@ static void oledDrawBallPage(void)
     oled.draw_string(&oled, 0, 4, "TARGET:", OLED_COLOR_WHITE);
     oled.draw_int(&oled, 8, 4, (int32_t)(target + 0.5f),
                   OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 0, 6, "fps:", OLED_COLOR_WHITE);
-    oled.draw_float(&oled, 4, 6, host_fps, 1, OLED_COLOR_WHITE);
-    oled.draw_string(&oled, 10, 6, "q:", OLED_COLOR_WHITE);
-    oled.draw_int(&oled, 12, 6,
-                  (int32_t)(ball_host_valid_position_count & 0xFFU),
-                  OLED_COLOR_WHITE);
+    if (mode3_active)
+    {
+        oled.draw_string(&oled, 0, 6, "TIME:", OLED_COLOR_WHITE);
+        oled.draw_float(&oled, 5, 6,
+                        (float)display_time_ms * 0.001f,
+                        2, OLED_COLOR_WHITE);
+        oled.draw_string(&oled, 11, 6, "s", OLED_COLOR_WHITE);
+    }
+    else
+    {
+        oled.draw_string(&oled, 0, 6, "fps:", OLED_COLOR_WHITE);
+        oled.draw_float(&oled, 4, 6, host_fps, 1, OLED_COLOR_WHITE);
+        oled.draw_string(&oled, 10, 6, "q:", OLED_COLOR_WHITE);
+        oled.draw_int(&oled, 12, 6,
+                      (int32_t)(ball_host_valid_position_count & 0xFFU),
+                      OLED_COLOR_WHITE);
+    }
 }
 
 static void ballHostControlTask(void *argument)
@@ -1014,7 +1063,7 @@ static void trackTask(void *argument)
             }
             last_control_tick = now_tick;
             if (mode == ROBOT_MODE_REQUIREMENT_3)
-                chassis.set_velocity(&chassis, 0.0f, 0.0f);
+                trackRunRequirement3(now_tick);
             else if (mode == ROBOT_MODE_REQUIREMENT_2)
                 trackRunRequirement2(now_tick, control_dt_s);
             else if (mode == ROBOT_MODE_REQUIREMENT_4)
@@ -1043,6 +1092,129 @@ static bool trackModeIsSupported(uint8_t selected_mode)
            (selected_mode == ROBOT_MODE_REQUIREMENT_4) ||
            (selected_mode == ROBOT_MODE_REQUIREMENT_5) ||
            (selected_mode == ROBOT_MODE_REQUIREMENT_6);
+}
+
+static void trackRunRequirement3(uint32_t now_tick)
+{
+    float measured_px;
+    uint32_t measurement_tick;
+    float tolerance_px;
+    float error_px;
+    uint32_t hold_ms;
+    uint32_t final_hold_ms;
+    uint32_t timeout_ms;
+    bool measurement_valid;
+
+    /* Requirement 3 explicitly requires the chassis to remain stationary. */
+    chassis.set_velocity(&chassis, 0.0f, 0.0f);
+
+    taskENTER_CRITICAL();
+    measured_px = ball_real;
+    measurement_tick = ball_host_last_frame_tick;
+    tolerance_px = ball_mode3_ram.arrival_tolerance_cm *
+                   ball_mode3_ram.pixels_per_cm;
+    hold_ms = ball_mode3_ram.arrival_hold_ms;
+    final_hold_ms = ball_mode3_ram.final_hold_ms;
+    timeout_ms = ball_mode3_ram.timeout_ms;
+    taskEXIT_CRITICAL();
+
+    tolerance_px = ballPidSanitize(
+        tolerance_px,
+        BALL_MODE3_DEFAULT_TOLERANCE_CM *
+            BALL_MODE3_DEFAULT_PIXELS_PER_CM,
+        1.0f,
+        60.0f);
+    if ((hold_ms < 20U) || (hold_ms > 1000U))
+        hold_ms = BALL_MODE3_DEFAULT_HOLD_MS;
+    if (final_hold_ms > 10000U)
+        final_hold_ms = BALL_MODE3_DEFAULT_FINAL_HOLD_MS;
+    if ((timeout_ms < 1000U) || (timeout_ms > 5000U))
+        timeout_ms = BALL_MODE3_DEFAULT_TIMEOUT_MS;
+
+    if (ball_mode3_state.phase == BALL_MODE3_FINAL_HOLD)
+    {
+        /* The official completion time has already stopped at -5 cm. */
+        ball_target = ball_mode3_state.negative_target_px;
+        ball_mode3_state.active_target_px = ball_target;
+        if ((now_tick - ball_mode3_state.final_hold_start_tick) >=
+            final_hold_ms)
+        {
+            ball_mode3_state.phase = BALL_MODE3_COMPLETE;
+            ball_target = 150.0f;
+            ball_mode3_state.active_target_px = ball_target;
+            ball_pid_reset_request = 1U;
+            trackStop(now_tick);
+        }
+        return;
+    }
+
+    ball_mode3_state.elapsed_ms = now_tick - track_start_tick;
+    if (ball_mode3_state.elapsed_ms >= timeout_ms)
+    {
+        ball_target = ball_mode3_state.negative_target_px;
+        ball_mode3_state.active_target_px = ball_target;
+        ball_mode3_state.phase = BALL_MODE3_TIMEOUT;
+        ball_mode3_state.timeout_count++;
+        ball_mode3_state.inside_since_tick = 0U;
+        ball_test_error = 5U;
+        trackStop(now_tick);
+        return;
+    }
+
+    measurement_valid =
+        (measurement_tick != 0U) &&
+        ((now_tick - measurement_tick) <= BALL_CAMERA_TIMEOUT_MS) &&
+        (measured_px != BALL_HOST_INVALID_POSITION) &&
+        ballPositionPixelValid(measured_px);
+    if (!measurement_valid)
+    {
+        ball_mode3_state.inside_since_tick = 0U;
+        return;
+    }
+
+    error_px = ball_target - measured_px;
+    ball_mode3_state.active_target_px = ball_target;
+    ball_mode3_state.error_px = error_px;
+    if (ballPidAbs(error_px) > tolerance_px)
+    {
+        ball_mode3_state.inside_since_tick = 0U;
+        return;
+    }
+
+    if (ball_mode3_state.inside_since_tick == 0U)
+    {
+        ball_mode3_state.inside_since_tick = now_tick;
+        return;
+    }
+    if ((now_tick - ball_mode3_state.inside_since_tick) < hold_ms)
+        return;
+
+    ball_mode3_state.inside_since_tick = 0U;
+    if (ball_mode3_state.phase == BALL_MODE3_TO_POSITIVE)
+    {
+        ball_mode3_state.phase = BALL_MODE3_TO_NEGATIVE;
+        ball_target = ball_mode3_state.negative_target_px;
+        ball_mode3_state.active_target_px = ball_target;
+        /* Do not carry the +5 cm integral bias into the return trip. */
+        ball_pid_reset_request = 1U;
+    }
+    else if (ball_mode3_state.phase == BALL_MODE3_TO_NEGATIVE)
+    {
+        ball_mode3_state.phase = BALL_MODE3_FINAL_HOLD;
+        ball_mode3_state.completion_time_ms =
+            now_tick - track_start_tick;
+        ball_mode3_state.final_hold_start_tick = now_tick;
+        ball_mode3_state.complete_count++;
+        ball_test_error = 0U;
+        /* Stop scoring time now, but keep the control task alive for 3 s. */
+        taskENTER_CRITICAL();
+        track_elapsed_ms = ball_mode3_state.completion_time_ms;
+        track_total_time_ms = track_elapsed_ms;
+        track_timer_stopped = true;
+        taskEXIT_CRITICAL();
+        ball_target = ball_mode3_state.negative_target_px;
+        ball_mode3_state.active_target_px = ball_target;
+    }
 }
 
 static bool trackModeUsesStableProfile(uint8_t selected_mode)
@@ -1413,6 +1585,11 @@ static void trackStart(uint32_t start_tick)
 {
     float latest_ball_position;
     float start_position_error;
+    float center_px;
+    float pixels_per_cm;
+    float endpoint_cm;
+    float pixel_direction;
+    float start_tolerance_px;
     uint32_t latest_ball_tick;
     uint32_t now_tick;
 
@@ -1422,18 +1599,38 @@ static void trackStart(uint32_t start_tick)
         taskENTER_CRITICAL();
         latest_ball_position = ball_real;
         latest_ball_tick = ball_host_last_frame_tick;
+        center_px = ball_mode3_ram.center_px;
+        pixels_per_cm = ball_mode3_ram.pixels_per_cm;
+        endpoint_cm = ball_mode3_ram.endpoint_cm;
+        pixel_direction = ball_mode3_ram.positive_pixel_direction;
         taskEXIT_CRITICAL();
+        pixels_per_cm = ballPidSanitize(
+            pixels_per_cm,
+            BALL_MODE3_DEFAULT_PIXELS_PER_CM,
+            1.0f,
+            100.0f);
+        center_px = ballPidSanitize(
+            center_px,
+            150.0f,
+            BALL_POSITION_MIN_PX,
+            BALL_POSITION_MAX_PX);
+        endpoint_cm = ballPidSanitize(
+            endpoint_cm,
+            BALL_MODE3_DEFAULT_ENDPOINT_CM,
+            1.0f,
+            12.0f);
+        pixel_direction = (pixel_direction < 0.0f) ? -1.0f : 1.0f;
+        start_tolerance_px = pixels_per_cm;
         now_tick = HAL_GetTick();
-        start_position_error = latest_ball_position - ball_target;
+        start_position_error = latest_ball_position - center_px;
         if (start_position_error < 0.0f)
             start_position_error = -start_position_error;
         if ((latest_ball_tick == 0U) ||
             ((now_tick - latest_ball_tick) >
              BALL_MODE3_START_MAX_AGE_MS) ||
-            ((latest_ball_position != BALL_HOST_INVALID_POSITION) &&
-             ((!ballPositionPixelValid(latest_ball_position)) ||
-              (start_position_error >
-               BALL_MODE3_START_TOLERANCE_PX))))
+            (latest_ball_position == BALL_HOST_INVALID_POSITION) ||
+            (!ballPositionPixelValid(latest_ball_position)) ||
+            (start_position_error > start_tolerance_px))
         {
             track_elapsed_ms = 0U;
             track_total_time_ms = 0U;
@@ -1444,6 +1641,31 @@ static void trackStart(uint32_t start_tick)
         }
         if (ball_test_error == 3U)
             ball_test_error = 0U;
+
+        ball_mode3_state.phase = BALL_MODE3_TO_POSITIVE;
+        ball_mode3_state.center_px = center_px;
+        ball_mode3_state.positive_target_px = ballPidClamp(
+            ball_mode3_state.center_px +
+                pixel_direction * endpoint_cm * pixels_per_cm,
+            BALL_POSITION_MIN_PX,
+            BALL_POSITION_MAX_PX);
+        ball_mode3_state.negative_target_px = ballPidClamp(
+            ball_mode3_state.center_px -
+                pixel_direction * endpoint_cm * pixels_per_cm,
+            BALL_POSITION_MIN_PX,
+            BALL_POSITION_MAX_PX);
+        ball_mode3_state.active_target_px =
+            ball_mode3_state.positive_target_px;
+        ball_mode3_state.error_px = 0.0f;
+        ball_mode3_state.inside_since_tick = 0U;
+        ball_mode3_state.final_hold_start_tick = 0U;
+        ball_mode3_state.elapsed_ms = 0U;
+        ball_mode3_state.completion_time_ms = 0U;
+        ball_mode3_state.start_count++;
+        ball_target = ball_mode3_state.positive_target_px;
+        ball_pid_ram.enabled = 1U;
+        ball_pid_reset_request = 1U;
+        led_green.on(&led_green);
     }
     chassis.reset_odometry(&chassis);
     memset(&track.data, 0, sizeof(track.data));
@@ -1506,6 +1728,13 @@ static void trackStop(uint32_t stop_tick)
     track_timer_stopped = true;
     taskEXIT_CRITICAL();
     track_running = false;
+    if ((mode == ROBOT_MODE_REQUIREMENT_3) &&
+        ((ball_mode3_state.phase == BALL_MODE3_TO_POSITIVE) ||
+         (ball_mode3_state.phase == BALL_MODE3_TO_NEGATIVE) ||
+         (ball_mode3_state.phase == BALL_MODE3_FINAL_HOLD)))
+    {
+        ball_mode3_state.phase = BALL_MODE3_ABORTED;
+    }
     led_red.off(&led_red);
 }
 
@@ -1853,6 +2082,11 @@ static void key1ProcessEvents(void)
         if (ball_menu_active)
         {
             ball_target = ball_real;
+            if (mode == ROBOT_MODE_REQUIREMENT_3 &&
+                ballPositionPixelValid(ball_real))
+            {
+                ball_mode3_ram.center_px = ball_real;
+            }
         }
         else if (!track_running && !track_start_requested)
         {

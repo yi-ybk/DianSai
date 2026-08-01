@@ -43,8 +43,52 @@ typedef struct
     float chassis_acceleration_mps2;       /**< 当前送入前馈的小车指令加速度(m/s^2) */
 } BallPidRamState_t;
 
+typedef enum
+{
+    BALL_MODE3_IDLE = 0,
+    BALL_MODE3_TO_POSITIVE,
+    BALL_MODE3_TO_NEGATIVE,
+    BALL_MODE3_FINAL_HOLD,
+    BALL_MODE3_COMPLETE,
+    BALL_MODE3_TIMEOUT,
+    BALL_MODE3_ABORTED,
+} BallMode3Phase_t;
+
+/** Runtime-tunable parameters for requirement 3. */
+typedef struct
+{
+    float center_px;
+    float pixels_per_cm;
+    float positive_pixel_direction;
+    float endpoint_cm;
+    float arrival_tolerance_cm;
+    uint32_t arrival_hold_ms;
+    uint32_t final_hold_ms;
+    uint32_t timeout_ms;
+} BallMode3RamConfig_t;
+
+/** Observable state for the O -> +5 cm -> -5 cm sequence. */
+typedef struct
+{
+    uint32_t phase;
+    float center_px;
+    float positive_target_px;
+    float negative_target_px;
+    float active_target_px;
+    float error_px;
+    uint32_t inside_since_tick;
+    uint32_t final_hold_start_tick;
+    uint32_t elapsed_ms;
+    uint32_t completion_time_ms;
+    uint32_t start_count;
+    uint32_t complete_count;
+    uint32_t timeout_count;
+} BallMode3RamState_t;
+
 extern volatile BallPidRamConfig_t ball_pid_ram;
 extern volatile BallPidRamState_t ball_pid_state;
+extern volatile BallMode3RamConfig_t ball_mode3_ram;
+extern volatile BallMode3RamState_t ball_mode3_state;
 extern volatile uint32_t ball_pid_reset_request;
 extern volatile float ball_target;
 extern volatile float ball_chassis_acceleration_mps2;
@@ -52,4 +96,3 @@ extern volatile float ball_real;
 extern volatile float now_angel;
 
 void robotInit(void);
-
