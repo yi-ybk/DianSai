@@ -22,6 +22,10 @@ typedef struct
     float breakaway_error_px;             /**< 启动力前馈的最小位置误差 */
     float breakaway_speed_px_s;            /**< 判定小球静止的速度阈值 */
     float maximum_slew_deg_per_s;          /**< 舵机指令最大变化速度 */
+    uint32_t actual_acceleration_ff_enabled; /**< 1: use encoder wheel-speed acceleration */
+    float actual_acceleration_filter_tau_s; /**< actual acceleration low-pass time constant */
+    float actual_acceleration_limit_mps2;   /**< reject/clamp differentiated speed spikes */
+    float actual_acceleration_deadband_mps2;/**< suppress steady-speed encoder noise */
 } BallPidRamConfig_t;
 
 /** @brief 小球位置控制器的RAM运行状态，供CCS在线观察 */
@@ -35,12 +39,18 @@ typedef struct
     float derivative_deg;
     float acceleration_feedforward_deg;
     float breakaway_feedforward_deg;
+    float mode3_movement_feedforward_deg;
     float unsaturated_angle_deg;
     float command_angle_deg;
     float dt_s;
     uint32_t update_count;
     uint32_t reset_count;
     float chassis_acceleration_mps2;       /**< 当前送入前馈的小车指令加速度(m/s^2) */
+    float measured_chassis_speed_mps;
+    float raw_chassis_acceleration_mps2;
+    float acceleration_update_dt_s;
+    uint32_t acceleration_update_count;
+    uint32_t acceleration_reset_count;
 } BallPidRamState_t;
 
 typedef enum
@@ -62,6 +72,16 @@ typedef struct
     float positive_pixel_direction;
     float endpoint_cm;
     float arrival_tolerance_cm;
+    float movement_kp;
+    float movement_ki;
+    float movement_kd;
+    float movement_derivative_filter_tau_s;
+    float movement_deadband_px;
+    float movement_feedforward_deg;
+    float movement_ff_start_cm;
+    float movement_ff_full_cm;
+    float return_target_slew_cm_s;
+    float arrival_speed_limit_cm_s;
     uint32_t arrival_hold_ms;
     uint32_t final_hold_ms;
     uint32_t timeout_ms;
@@ -76,6 +96,8 @@ typedef struct
     float negative_target_px;
     float active_target_px;
     float error_px;
+    float measured_speed_cm_s;
+    uint32_t target_update_tick;
     uint32_t inside_since_tick;
     uint32_t final_hold_start_tick;
     uint32_t elapsed_ms;

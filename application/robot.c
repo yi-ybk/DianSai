@@ -59,6 +59,9 @@ static float ballPidUpdate(float target_px,
                            float dt_s);
 static void ballPidReset(void);
 static void ballPidGetConfig(BallPidRamConfig_t *config);
+static void ballActualAccelerationReset(void);
+static void ballActualAccelerationUpdate(uint32_t now_tick);
+static float ballMode3MovementFeedforward(float error_px);
 static float ballPidClamp(float value, float minimum, float maximum);
 static float ballPidAbs(float value);
 static float ballPidSanitize(float value,
@@ -275,6 +278,8 @@ volatile float ball_real = 0.0f;
 #define BALL_MODE3_DEFAULT_PIXELS_PER_CM       12.0f
 #define BALL_MODE3_DEFAULT_ENDPOINT_CM          5.0f
 #define BALL_MODE3_DEFAULT_TOLERANCE_CM         0.8f
+#define BALL_MODE3_DEFAULT_RETURN_SLEW_CM_S      8.0f
+#define BALL_MODE3_DEFAULT_SPEED_LIMIT_CM_S      2.0f
 #define BALL_MODE3_DEFAULT_HOLD_MS             150U
 #define BALL_MODE3_DEFAULT_FINAL_HOLD_MS       3000U
 #define BALL_MODE3_DEFAULT_TIMEOUT_MS         5000U
@@ -376,6 +381,10 @@ volatile BallPidRamConfig_t ball_pid_ram = {
     .breakaway_error_px = 4.0f,
     .breakaway_speed_px_s = 10.0f,
     .maximum_slew_deg_per_s = 60.0f,
+    .actual_acceleration_ff_enabled = 1U,
+    .actual_acceleration_filter_tau_s = 0.05f,
+    .actual_acceleration_limit_mps2 = 4.0f,
+    .actual_acceleration_deadband_mps2 = 0.08f,
 };
 volatile BallPidRamState_t ball_pid_state = {0};
 volatile BallMode3RamConfig_t ball_mode3_ram = {
@@ -386,6 +395,17 @@ volatile BallMode3RamConfig_t ball_mode3_ram = {
     .endpoint_cm = BALL_MODE3_DEFAULT_ENDPOINT_CM,
     /* Use 0.8 cm internally to leave margin for the 1 cm judging limit. */
     .arrival_tolerance_cm = BALL_MODE3_DEFAULT_TOLERANCE_CM,
+    .movement_kp = 0.18f,
+    .movement_ki = 0.0f,
+    .movement_kd = 0.08f,
+    .movement_derivative_filter_tau_s = 0.08f,
+    .movement_deadband_px = 0.5f,
+    /* Extra tilt is active only while travelling to the two endpoints. */
+    .movement_feedforward_deg = 2.0f,
+    .movement_ff_start_cm = 0.4f,
+    .movement_ff_full_cm = 2.0f,
+    .return_target_slew_cm_s = BALL_MODE3_DEFAULT_RETURN_SLEW_CM_S,
+    .arrival_speed_limit_cm_s = BALL_MODE3_DEFAULT_SPEED_LIMIT_CM_S,
     .arrival_hold_ms = BALL_MODE3_DEFAULT_HOLD_MS,
     .final_hold_ms = BALL_MODE3_DEFAULT_FINAL_HOLD_MS,
     .timeout_ms = BALL_MODE3_DEFAULT_TIMEOUT_MS,
@@ -400,6 +420,10 @@ static float ball_pid_integral_px_s = 0.0f;
 static float ball_pid_previous_measurement_px = 0.0f;
 static float ball_pid_filtered_speed_px_s = 0.0f;
 static bool ball_pid_has_measurement = false;
+static float ball_actual_previous_speed_mps = 0.0f;
+static float ball_actual_filtered_acceleration_mps2 = 0.0f;
+static uint32_t ball_actual_previous_tick = 0U;
+static bool ball_actual_has_speed = false;
 void robotInit(void)
 {
     /* 初始化机器人相关的硬件和软件组件 */
@@ -506,6 +530,7 @@ static void chassisControlTask(void *argument)
             camera_control_active = false;
         }
         chassis.update(&chassis,0.005f);
+        ballActualAccelerationUpdate(HAL_GetTick());
         osDelay(5);
     }
 }
@@ -525,12 +550,35 @@ static float ballPidUpdate(float target_px,
     float derivative_deg;
     float acceleration_feedforward_deg;
     float breakaway_feedforward_deg = 0.0f;
+    float mode3_movement_feedforward_deg;
     float unsaturated_angle_deg;
     float integral_command_change_deg;
     float command_angle_deg;
     float maximum_step_deg;
 
     ballPidGetConfig(&config);
+    if ((mode == ROBOT_MODE_REQUIREMENT_3) && track_running &&
+        ((ball_mode3_state.phase == BALL_MODE3_TO_POSITIVE) ||
+         (ball_mode3_state.phase == BALL_MODE3_TO_NEGATIVE)))
+    {
+        /* Requirement 3 uses a stronger controller only while travelling. */
+        config.kp = ballPidSanitize(
+            ball_mode3_ram.movement_kp, 0.18f, 0.0f, 1.0f);
+        config.ki = ballPidSanitize(
+            ball_mode3_ram.movement_ki, 0.0f, 0.0f, 1.0f);
+        config.kd = ballPidSanitize(
+            ball_mode3_ram.movement_kd, 0.08f, 0.0f, 1.0f);
+        config.derivative_filter_tau_s = ballPidSanitize(
+            ball_mode3_ram.movement_derivative_filter_tau_s,
+            0.08f,
+            0.0f,
+            2.0f);
+        config.deadband_px = ballPidSanitize(
+            ball_mode3_ram.movement_deadband_px,
+            0.5f,
+            0.0f,
+            20.0f);
+    }
     dt_s = ballPidSanitize(dt_s,
                            BALL_PID_DEFAULT_DT_S,
                            BALL_PID_MIN_DT_S,
@@ -586,11 +634,14 @@ static float ballPidUpdate(float target_px,
         breakaway_feedforward_deg = error_px > 0.0f ?
             config.breakaway_angle_deg : -config.breakaway_angle_deg;
     }
+    mode3_movement_feedforward_deg =
+        ballMode3MovementFeedforward(error_px);
 
     unsaturated_angle_deg = config.level_angle_deg +
         config.control_direction *
         (proportional_deg + integral_deg + derivative_deg +
-         acceleration_feedforward_deg + breakaway_feedforward_deg);
+         acceleration_feedforward_deg + breakaway_feedforward_deg +
+         mode3_movement_feedforward_deg);
 
     integral_command_change_deg = config.control_direction * config.ki *
         (candidate_integral_px_s - ball_pid_integral_px_s);
@@ -605,7 +656,8 @@ static float ballPidUpdate(float target_px,
     unsaturated_angle_deg = config.level_angle_deg +
         config.control_direction *
         (proportional_deg + integral_deg + derivative_deg +
-         acceleration_feedforward_deg + breakaway_feedforward_deg);
+         acceleration_feedforward_deg + breakaway_feedforward_deg +
+         mode3_movement_feedforward_deg);
     command_angle_deg = ballPidClamp(unsaturated_angle_deg,
                                      config.output_min_angle_deg,
                                      config.output_max_angle_deg);
@@ -628,6 +680,8 @@ static float ballPidUpdate(float target_px,
         acceleration_feedforward_deg;
     ball_pid_state.breakaway_feedforward_deg =
         breakaway_feedforward_deg;
+    ball_pid_state.mode3_movement_feedforward_deg =
+        mode3_movement_feedforward_deg;
     ball_pid_state.unsaturated_angle_deg = unsaturated_angle_deg;
     ball_pid_state.command_angle_deg = command_angle_deg;
     ball_pid_state.dt_s = dt_s;
@@ -652,6 +706,7 @@ static void ballPidReset(void)
     ball_pid_state.derivative_deg = 0.0f;
     ball_pid_state.acceleration_feedforward_deg = 0.0f;
     ball_pid_state.breakaway_feedforward_deg = 0.0f;
+    ball_pid_state.mode3_movement_feedforward_deg = 0.0f;
     ball_pid_state.unsaturated_angle_deg = now_angel;
     ball_pid_state.command_angle_deg = now_angel;
     ball_pid_state.dt_s = 0.0f;
@@ -710,6 +765,190 @@ static void ballPidGetConfig(BallPidRamConfig_t *config)
         ball_pid_ram.breakaway_speed_px_s, 10.0f, 0.0f, 500.0f);
     config->maximum_slew_deg_per_s = ballPidSanitize(
         ball_pid_ram.maximum_slew_deg_per_s, 60.0f, 1.0f, 720.0f);
+    config->actual_acceleration_ff_enabled =
+        ball_pid_ram.actual_acceleration_ff_enabled != 0U ? 1U : 0U;
+    config->actual_acceleration_filter_tau_s = ballPidSanitize(
+        ball_pid_ram.actual_acceleration_filter_tau_s,
+        0.05f,
+        0.0f,
+        1.0f);
+    config->actual_acceleration_limit_mps2 = ballPidSanitize(
+        ball_pid_ram.actual_acceleration_limit_mps2,
+        4.0f,
+        0.2f,
+        20.0f);
+    config->actual_acceleration_deadband_mps2 = ballPidSanitize(
+        ball_pid_ram.actual_acceleration_deadband_mps2,
+        0.08f,
+        0.0f,
+        2.0f);
+}
+
+static void ballActualAccelerationReset(void)
+{
+    ball_actual_previous_speed_mps = 0.0f;
+    ball_actual_filtered_acceleration_mps2 = 0.0f;
+    ball_actual_previous_tick = 0U;
+    ball_actual_has_speed = false;
+    ball_chassis_acceleration_mps2 = 0.0f;
+    ball_pid_state.measured_chassis_speed_mps = 0.0f;
+    ball_pid_state.raw_chassis_acceleration_mps2 = 0.0f;
+    ball_pid_state.acceleration_update_dt_s = 0.0f;
+    ball_pid_state.chassis_acceleration_mps2 = 0.0f;
+    ball_pid_state.acceleration_reset_count++;
+}
+
+static void ballActualAccelerationUpdate(uint32_t now_tick)
+{
+    ChassisData_t chassis_data;
+    float measured_speed_mps;
+    float raw_acceleration_mps2;
+    float filtered_acceleration_mps2;
+    float filter_tau_s;
+    float acceleration_limit_mps2;
+    float acceleration_deadband_mps2;
+    float dt_s;
+    float filter_alpha;
+    uint32_t dt_ms;
+
+    if ((ball_pid_ram.actual_acceleration_ff_enabled == 0U) ||
+        (!track_running) || (!trackModeUsesStableProfile(mode)))
+    {
+        if (ball_actual_has_speed ||
+            (ball_chassis_acceleration_mps2 != 0.0f))
+        {
+            ballActualAccelerationReset();
+        }
+        return;
+    }
+
+    chassis.get_data(&chassis, &chassis_data);
+    measured_speed_mps = ballPidSanitize(
+        chassis_data.forward_speed_mps, 0.0f, -2.0f, 2.0f);
+    if ((!ball_actual_has_speed) || (ball_actual_previous_tick == 0U) ||
+        (now_tick <= ball_actual_previous_tick))
+    {
+        ball_actual_previous_speed_mps = measured_speed_mps;
+        ball_actual_previous_tick = now_tick;
+        ball_actual_has_speed = true;
+        ball_chassis_acceleration_mps2 = 0.0f;
+        ball_pid_state.measured_chassis_speed_mps = measured_speed_mps;
+        ball_pid_state.raw_chassis_acceleration_mps2 = 0.0f;
+        ball_pid_state.acceleration_update_dt_s = 0.0f;
+        return;
+    }
+
+    dt_ms = now_tick - ball_actual_previous_tick;
+    if (dt_ms > 50U)
+    {
+        ballActualAccelerationReset();
+        ball_actual_previous_speed_mps = measured_speed_mps;
+        ball_actual_previous_tick = now_tick;
+        ball_actual_has_speed = true;
+        ball_pid_state.measured_chassis_speed_mps = measured_speed_mps;
+        return;
+    }
+
+    dt_s = (float)dt_ms * 0.001f;
+    raw_acceleration_mps2 =
+        (measured_speed_mps - ball_actual_previous_speed_mps) / dt_s;
+    ball_actual_previous_speed_mps = measured_speed_mps;
+    ball_actual_previous_tick = now_tick;
+
+    filter_tau_s = ballPidSanitize(
+        ball_pid_ram.actual_acceleration_filter_tau_s,
+        0.05f,
+        0.0f,
+        1.0f);
+    acceleration_limit_mps2 = ballPidSanitize(
+        ball_pid_ram.actual_acceleration_limit_mps2,
+        4.0f,
+        0.2f,
+        20.0f);
+    acceleration_deadband_mps2 = ballPidSanitize(
+        ball_pid_ram.actual_acceleration_deadband_mps2,
+        0.08f,
+        0.0f,
+        2.0f);
+    raw_acceleration_mps2 = ballPidClamp(
+        raw_acceleration_mps2,
+        -acceleration_limit_mps2,
+        acceleration_limit_mps2);
+    filter_alpha = (filter_tau_s <= 0.0f) ?
+        1.0f : dt_s / (filter_tau_s + dt_s);
+    ball_actual_filtered_acceleration_mps2 += filter_alpha *
+        (raw_acceleration_mps2 -
+         ball_actual_filtered_acceleration_mps2);
+    filtered_acceleration_mps2 =
+        ball_actual_filtered_acceleration_mps2;
+    if (ballPidAbs(filtered_acceleration_mps2) <
+        acceleration_deadband_mps2)
+    {
+        filtered_acceleration_mps2 = 0.0f;
+    }
+
+    ball_pid_state.measured_chassis_speed_mps = measured_speed_mps;
+    ball_pid_state.raw_chassis_acceleration_mps2 =
+        raw_acceleration_mps2;
+    ball_pid_state.acceleration_update_dt_s = dt_s;
+    ball_pid_state.acceleration_update_count++;
+    ball_pid_state.chassis_acceleration_mps2 =
+        filtered_acceleration_mps2;
+    /* Publish last so the PID task always sees the newest complete sample. */
+    ball_chassis_acceleration_mps2 = filtered_acceleration_mps2;
+}
+
+static float ballMode3MovementFeedforward(float error_px)
+{
+    float pixels_per_cm;
+    float feedforward_deg;
+    float start_error_px;
+    float full_error_px;
+    float absolute_error_px;
+    float scale;
+
+    if ((mode != ROBOT_MODE_REQUIREMENT_3) || (!track_running) ||
+        ((ball_mode3_state.phase != BALL_MODE3_TO_POSITIVE) &&
+         (ball_mode3_state.phase != BALL_MODE3_TO_NEGATIVE)))
+    {
+        return 0.0f;
+    }
+
+    pixels_per_cm = ballPidSanitize(
+        ball_mode3_ram.pixels_per_cm,
+        BALL_MODE3_DEFAULT_PIXELS_PER_CM,
+        1.0f,
+        100.0f);
+    feedforward_deg = ballPidSanitize(
+        ball_mode3_ram.movement_feedforward_deg,
+        2.0f,
+        0.0f,
+        6.0f);
+    start_error_px = ballPidSanitize(
+        ball_mode3_ram.movement_ff_start_cm,
+        0.4f,
+        0.0f,
+        5.0f) * pixels_per_cm;
+    full_error_px = ballPidSanitize(
+        ball_mode3_ram.movement_ff_full_cm,
+        2.0f,
+        0.1f,
+        10.0f) * pixels_per_cm;
+    if (full_error_px <= start_error_px)
+        full_error_px = start_error_px + pixels_per_cm;
+
+    absolute_error_px = ballPidAbs(error_px);
+    if ((feedforward_deg <= 0.0f) ||
+        (absolute_error_px <= start_error_px))
+    {
+        return 0.0f;
+    }
+
+    scale = (absolute_error_px - start_error_px) /
+            (full_error_px - start_error_px);
+    scale = ballPidClamp(scale, 0.0f, 1.0f);
+    return error_px > 0.0f ?
+        feedforward_deg * scale : -feedforward_deg * scale;
 }
 
 static float ballPidClamp(float value, float minimum, float maximum)
@@ -1098,8 +1337,15 @@ static void trackRunRequirement3(uint32_t now_tick)
 {
     float measured_px;
     uint32_t measurement_tick;
+    float measured_speed_px_s;
+    float pixels_per_cm;
     float tolerance_px;
+    float return_slew_cm_s;
+    float arrival_speed_limit_cm_s;
+    float final_target_px;
+    float maximum_target_step_px;
     float error_px;
+    uint32_t target_dt_ms;
     uint32_t hold_ms;
     uint32_t final_hold_ms;
     uint32_t timeout_ms;
@@ -1111,8 +1357,13 @@ static void trackRunRequirement3(uint32_t now_tick)
     taskENTER_CRITICAL();
     measured_px = ball_real;
     measurement_tick = ball_host_last_frame_tick;
+    measured_speed_px_s = ball_pid_state.measured_speed_px_s;
+    pixels_per_cm = ball_mode3_ram.pixels_per_cm;
     tolerance_px = ball_mode3_ram.arrival_tolerance_cm *
-                   ball_mode3_ram.pixels_per_cm;
+                   pixels_per_cm;
+    return_slew_cm_s = ball_mode3_ram.return_target_slew_cm_s;
+    arrival_speed_limit_cm_s =
+        ball_mode3_ram.arrival_speed_limit_cm_s;
     hold_ms = ball_mode3_ram.arrival_hold_ms;
     final_hold_ms = ball_mode3_ram.final_hold_ms;
     timeout_ms = ball_mode3_ram.timeout_ms;
@@ -1124,6 +1375,21 @@ static void trackRunRequirement3(uint32_t now_tick)
             BALL_MODE3_DEFAULT_PIXELS_PER_CM,
         1.0f,
         60.0f);
+    pixels_per_cm = ballPidSanitize(
+        pixels_per_cm,
+        BALL_MODE3_DEFAULT_PIXELS_PER_CM,
+        1.0f,
+        100.0f);
+    return_slew_cm_s = ballPidSanitize(
+        return_slew_cm_s,
+        BALL_MODE3_DEFAULT_RETURN_SLEW_CM_S,
+        2.0f,
+        30.0f);
+    arrival_speed_limit_cm_s = ballPidSanitize(
+        arrival_speed_limit_cm_s,
+        BALL_MODE3_DEFAULT_SPEED_LIMIT_CM_S,
+        0.2f,
+        10.0f);
     if ((hold_ms < 20U) || (hold_ms > 1000U))
         hold_ms = BALL_MODE3_DEFAULT_HOLD_MS;
     if (final_hold_ms > 10000U)
@@ -1146,6 +1412,32 @@ static void trackRunRequirement3(uint32_t now_tick)
             trackStop(now_tick);
         }
         return;
+    }
+
+    final_target_px =
+        (ball_mode3_state.phase == BALL_MODE3_TO_POSITIVE) ?
+        ball_mode3_state.positive_target_px :
+        ball_mode3_state.negative_target_px;
+    if (ball_mode3_state.phase == BALL_MODE3_TO_NEGATIVE)
+    {
+        target_dt_ms = now_tick - ball_mode3_state.target_update_tick;
+        if (target_dt_ms > 50U)
+            target_dt_ms = 50U;
+        maximum_target_step_px = return_slew_cm_s * pixels_per_cm *
+                                 (float)target_dt_ms * 0.001f;
+        if (ball_target < final_target_px)
+        {
+            ball_target += maximum_target_step_px;
+            if (ball_target > final_target_px)
+                ball_target = final_target_px;
+        }
+        else if (ball_target > final_target_px)
+        {
+            ball_target -= maximum_target_step_px;
+            if (ball_target < final_target_px)
+                ball_target = final_target_px;
+        }
+        ball_mode3_state.target_update_tick = now_tick;
     }
 
     ball_mode3_state.elapsed_ms = now_tick - track_start_tick;
@@ -1172,10 +1464,16 @@ static void trackRunRequirement3(uint32_t now_tick)
         return;
     }
 
-    error_px = ball_target - measured_px;
+    /* Judge arrival against the real endpoint, not the moving ramp target. */
+    error_px = final_target_px - measured_px;
     ball_mode3_state.active_target_px = ball_target;
     ball_mode3_state.error_px = error_px;
-    if (ballPidAbs(error_px) > tolerance_px)
+    ball_mode3_state.measured_speed_cm_s =
+        measured_speed_px_s / pixels_per_cm;
+    if ((ballPidAbs(final_target_px - ball_target) > 0.5f) ||
+        (ballPidAbs(error_px) > tolerance_px) ||
+        (ballPidAbs(measured_speed_px_s) >
+         arrival_speed_limit_cm_s * pixels_per_cm))
     {
         ball_mode3_state.inside_since_tick = 0U;
         return;
@@ -1193,8 +1491,10 @@ static void trackRunRequirement3(uint32_t now_tick)
     if (ball_mode3_state.phase == BALL_MODE3_TO_POSITIVE)
     {
         ball_mode3_state.phase = BALL_MODE3_TO_NEGATIVE;
-        ball_target = ball_mode3_state.negative_target_px;
+        /* Ramp from +5 cm toward -5 cm to brake before the endpoint. */
+        ball_target = ball_mode3_state.positive_target_px;
         ball_mode3_state.active_target_px = ball_target;
+        ball_mode3_state.target_update_tick = now_tick;
         /* Do not carry the +5 cm integral bias into the return trip. */
         ball_pid_reset_request = 1U;
     }
@@ -1206,6 +1506,8 @@ static void trackRunRequirement3(uint32_t now_tick)
         ball_mode3_state.final_hold_start_tick = now_tick;
         ball_mode3_state.complete_count++;
         ball_test_error = 0U;
+        /* Switch from movement gains back to the normal holding gains. */
+        ball_pid_reset_request = 1U;
         /* Stop scoring time now, but keep the control task alive for 3 s. */
         taskENTER_CRITICAL();
         track_elapsed_ms = ball_mode3_state.completion_time_ms;
@@ -1657,6 +1959,8 @@ static void trackStart(uint32_t start_tick)
         ball_mode3_state.active_target_px =
             ball_mode3_state.positive_target_px;
         ball_mode3_state.error_px = 0.0f;
+        ball_mode3_state.measured_speed_cm_s = 0.0f;
+        ball_mode3_state.target_update_tick = start_tick;
         ball_mode3_state.inside_since_tick = 0U;
         ball_mode3_state.final_hold_start_tick = 0U;
         ball_mode3_state.elapsed_ms = 0U;
@@ -1686,7 +1990,7 @@ static void trackStart(uint32_t start_tick)
     track_curve_candidate_tick = 0U;
     track_curve_exit_candidate_tick = 0U;
     track_curve_confirmed = 0U;
-    ball_chassis_acceleration_mps2 = 0.0f;
+    ballActualAccelerationReset();
     requirement4_curve_detect_count = 0U;
     track_finish_line_detect_count = 0U;
     track_finish_last_mask = 0U;
@@ -1720,7 +2024,7 @@ static void trackStop(uint32_t stop_tick)
     track_stop_distance_m = chassis_data.distance_m;
     track.pid.reset(&track.pid);
     track_forward_speed_command = 0.0f;
-    ball_chassis_acceleration_mps2 = 0.0f;
+    ballActualAccelerationReset();
     taskENTER_CRITICAL();
     if (!track_timer_stopped)
         track_elapsed_ms = stop_tick - track_start_tick;
@@ -1909,7 +2213,6 @@ static float trackLimitForwardSpeed(float requested_speed_mps)
 static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s)
 {
     float maximum_step;
-    float previous_speed_mps = track_forward_speed_command;
     float deceleration_mps2;
     bool stable_profile = trackModeUsesStableProfile(mode);
     bool ball_lap_profile = trackModeUsesBallLapProfile(mode);
@@ -1952,16 +2255,7 @@ static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s)
     }
 
     track_forward_speed_command = target_speed_mps;
-    /* 使用限加减速后的速度指令计算前馈，匀速时自动回零。 */
-    if (stable_profile)
-    {
-        ball_chassis_acceleration_mps2 =
-            (track_forward_speed_command - previous_speed_mps) / dt_s;
-    }
-    else
-    {
-        ball_chassis_acceleration_mps2 = 0.0f;
-    }
+    /* Ball feedforward is updated from encoder-derived chassis speed. */
     return track_forward_speed_command;
 }
 
