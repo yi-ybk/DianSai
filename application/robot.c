@@ -16,6 +16,7 @@
 #include "pid.h"
 #include "chassis.h"
 #include "slaver.h"
+#include <string.h>
 
 /************ 函数声明 **************/
 static void chassisControlTask(void *argument);
@@ -36,6 +37,9 @@ static void trackRunRequirement4(uint32_t now_tick, float dt_s);
 static void trackRunRequirement5Or6(uint32_t now_tick, float dt_s);
 static void trackStart(uint32_t start_tick);
 static void trackStop(uint32_t stop_tick);
+static void trackDebugReset(void);
+static void trackDebugCapture(uint32_t now_tick);
+static void trackDebugStop(uint32_t stop_tick);
 static float trackLimitForwardSpeed(float requested_speed_mps);
 static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s);
 static float trackWrapAngleRad(float angle_rad);
@@ -53,7 +57,7 @@ static void chassisInit(void);
 static void gpioInterruptDispatch(GPIO_TypeDef *GPIOx);
 static float ballPidUpdate(float target_px,
                            float measured_px,
-                           float target_acceleration_px_s2,
+                           float chassis_acceleration_mps2,
                            float dt_s);
 static void ballPidReset(void);
 static void ballPidGetConfig(BallPidRamConfig_t *config);
@@ -170,7 +174,7 @@ Slaver_t ball_position_receiver = { SLAVER_OBJECT_DEFAULT };
 static SlaverSimpleFloatProtocol_t ball_position_protocol;
 
 volatile float ball_target = 150.0f;
-volatile float ball_target_acceleration_px_s2 = 0.0f;
+volatile float ball_chassis_acceleration_mps2 = 0.0f;
 volatile float ball_real = 0.0f;
 
 #define ROBOT_MODE_REQUIREMENT_3          3U
@@ -325,7 +329,7 @@ static volatile uint32_t key_a07_last_toggle_tick = 0U;
 #define BALL_PID_MAX_ACCELERATION_FF_DEG       2.0f
 
 volatile BallPidRamConfig_t ball_pid_ram = {
-    .enabled = 1U,
+    .enabled = 0U,
     .kp = 0.45f,
     .ki = 0.01f,
     .kd = 0.11f,
@@ -336,13 +340,14 @@ volatile BallPidRamConfig_t ball_pid_ram = {
     .integral_limit_px_s = 30.0f,
     .derivative_filter_tau_s = 0.05f,
     .deadband_px = 1.5f,
-    .acceleration_ff_gain = 0.0f,
+    .acceleration_ff_gain = 2.0f,
     .breakaway_angle_deg = 0.1f,
     .breakaway_error_px = 4.0f,
     .breakaway_speed_px_s = 10.0f,
     .maximum_slew_deg_per_s = 60.0f,
 };
 volatile BallPidRamState_t ball_pid_state = {0};
+volatile TrackDebugState_t track_debug_state = {0};
 volatile uint32_t ball_pid_reset_request = 0U;
 volatile float now_angel = BALL_SERVO_CENTER_ANGLE_DEG;
 
@@ -382,6 +387,7 @@ static void chassisControlTask(void *argument)
     bool camera_control_active = false;
 
     (void)argument;
+    /* 平衡闭环独立于循迹模式；上电后首个有效相机坐标到达即开始控制。 */
     motor_ball_servo.set_angle(&motor_ball_servo,
                                BALL_SERVO_CENTER_ANGLE_DEG);
     while (1)
@@ -389,7 +395,7 @@ static void chassisControlTask(void *argument)
         BallPidRamConfig_t config;
         float camera_position_px;
         float target_position_px;
-        float target_acceleration_px_s2;
+        float chassis_acceleration_mps2;
         uint32_t camera_frame_tick;
         uint32_t now_tick;
         bool camera_data_usable;
@@ -397,7 +403,7 @@ static void chassisControlTask(void *argument)
         taskENTER_CRITICAL();
         camera_position_px = ball_real;
         target_position_px = ball_target;
-        target_acceleration_px_s2 = ball_target_acceleration_px_s2;
+        chassis_acceleration_mps2 = ball_chassis_acceleration_mps2;
         camera_frame_tick = ball_host_last_frame_tick;
         taskEXIT_CRITICAL();
 
@@ -435,7 +441,7 @@ static void chassisControlTask(void *argument)
             /* camera_position_px 就是相机识别到的像素坐标 */
             now_angel = ballPidUpdate(target_position_px,
                                       camera_position_px,
-                                      target_acceleration_px_s2,
+                                      chassis_acceleration_mps2,
                                       frame_dt_s);
             motor_ball_servo.set_angle(&motor_ball_servo, now_angel);
             last_processed_camera_tick = camera_frame_tick;
@@ -465,7 +471,7 @@ static void chassisControlTask(void *argument)
 
 static float ballPidUpdate(float target_px,
                            float measured_px,
-                           float target_acceleration_px_s2,
+                           float chassis_acceleration_mps2,
                            float dt_s)
 {
     BallPidRamConfig_t config;
@@ -488,8 +494,8 @@ static float ballPidUpdate(float target_px,
                            BALL_PID_DEFAULT_DT_S,
                            BALL_PID_MIN_DT_S,
                            BALL_PID_MAX_DT_S);
-    target_acceleration_px_s2 = ballPidSanitize(
-        target_acceleration_px_s2, 0.0f, -10000.0f, 10000.0f);
+    chassis_acceleration_mps2 = ballPidSanitize(
+        chassis_acceleration_mps2, 0.0f, -5.0f, 5.0f);
 
     error_px = target_px - measured_px;
     if (ballPidAbs(error_px) <= config.deadband_px)
@@ -527,7 +533,7 @@ static float ballPidUpdate(float target_px,
     integral_deg = config.ki * candidate_integral_px_s;
     derivative_deg = -config.kd * ball_pid_filtered_speed_px_s;
     acceleration_feedforward_deg = ballPidClamp(
-        config.acceleration_ff_gain * target_acceleration_px_s2,
+        config.acceleration_ff_gain * chassis_acceleration_mps2,
         -BALL_PID_MAX_ACCELERATION_FF_DEG,
         BALL_PID_MAX_ACCELERATION_FF_DEG);
 
@@ -585,6 +591,8 @@ static float ballPidUpdate(float target_px,
     ball_pid_state.unsaturated_angle_deg = unsaturated_angle_deg;
     ball_pid_state.command_angle_deg = command_angle_deg;
     ball_pid_state.dt_s = dt_s;
+    ball_pid_state.chassis_acceleration_mps2 =
+        chassis_acceleration_mps2;
     ball_pid_state.update_count++;
 
     return command_angle_deg;
@@ -607,6 +615,7 @@ static void ballPidReset(void)
     ball_pid_state.unsaturated_angle_deg = now_angel;
     ball_pid_state.command_angle_deg = now_angel;
     ball_pid_state.dt_s = 0.0f;
+    ball_pid_state.chassis_acceleration_mps2 = 0.0f;
     ball_pid_state.reset_count++;
     ball_pid_reset_request = 0U;
 }
@@ -652,7 +661,7 @@ static void ballPidGetConfig(BallPidRamConfig_t *config)
     config->deadband_px = ballPidSanitize(
         ball_pid_ram.deadband_px, 1.5f, 0.0f, 50.0f);
     config->acceleration_ff_gain = ballPidSanitize(
-        ball_pid_ram.acceleration_ff_gain, 0.0f, -1.0f, 1.0f);
+        ball_pid_ram.acceleration_ff_gain, 2.0f, -10.0f, 10.0f);
     config->breakaway_angle_deg = ballPidSanitize(
         ball_pid_ram.breakaway_angle_deg, 0.0f, 0.0f, 3.0f);
     config->breakaway_error_px = ballPidSanitize(
@@ -997,14 +1006,206 @@ static void trackTask(void *argument)
                 trackRunRequirement5Or6(now_tick, control_dt_s);
             else
                 trackStop(now_tick);
+
+            if (track_running &&
+                (mode != ROBOT_MODE_REQUIREMENT_3))
+            {
+                trackDebugCapture(now_tick);
+            }
         }
         else
         {
             last_control_tick = 0U;
+            ball_chassis_acceleration_mps2 = 0.0f;
             chassis.set_velocity(&chassis, 0.0f, 0.0f);
         }
         osDelay(5);
     }
+}
+
+static void trackDebugReset(void)
+{
+    memset((void *)&track_debug_state, 0, sizeof(track_debug_state));
+    track_debug_state.active = 1U;
+    track_debug_state.mode = mode;
+    track_debug_state.min_command_forward_speed_mps = 1000.0f;
+    track_debug_state.min_wheel_speed_scale = 1.0f;
+}
+
+static void trackDebugCapture(uint32_t now_tick)
+{
+    float absolute_error = track.data.normalized_error;
+    float absolute_pid_d = track.pid.data.d_out;
+    float absolute_base_turn = track.data.turn_speed;
+    float absolute_target_turn = chassis.data.target_turn_speed_radps;
+    float absolute_command_turn = chassis.data.command_turn_speed_radps;
+    float left_speed_error = wheel_left.data.target_linear_speed_mps -
+                             wheel_left.data.linear_speed_mps;
+    float right_speed_error = wheel_right.data.target_linear_speed_mps -
+                              wheel_right.data.linear_speed_mps;
+    float turn_limit = track.init_config.max_turn_speed;
+    uint32_t black_mask = track.data.black_mask & 0xFFU;
+    uint32_t black_count = track.data.black_count;
+    uint32_t channel;
+    bool line_lost = (black_count == 0U);
+    bool outer_sensor_only = (black_mask == 0x01U) ||
+                             (black_mask == 0x80U);
+
+    if (absolute_error < 0.0f)
+        absolute_error = -absolute_error;
+    if (absolute_pid_d < 0.0f)
+        absolute_pid_d = -absolute_pid_d;
+    if (absolute_base_turn < 0.0f)
+        absolute_base_turn = -absolute_base_turn;
+    if (absolute_target_turn < 0.0f)
+        absolute_target_turn = -absolute_target_turn;
+    if (absolute_command_turn < 0.0f)
+        absolute_command_turn = -absolute_command_turn;
+    if (left_speed_error < 0.0f)
+        left_speed_error = -left_speed_error;
+    if (right_speed_error < 0.0f)
+        right_speed_error = -right_speed_error;
+
+    if (mode == ROBOT_MODE_REQUIREMENT_2)
+        turn_limit = TRACK_AGGRESSIVE_MAX_TURN_SPEED;
+    else if ((mode == ROBOT_MODE_REQUIREMENT_5) ||
+             (mode == ROBOT_MODE_REQUIREMENT_6))
+        turn_limit = TRACK_BALL_LAP_MAX_TURN_SPEED;
+
+    track_debug_state.active = 1U;
+    track_debug_state.mode = mode;
+    track_debug_state.update_count++;
+    track_debug_state.elapsed_ms = now_tick - track_start_tick;
+    track_debug_state.black_mask = black_mask;
+    track_debug_state.black_count = black_count;
+    track_debug_state.normalized_error = track.data.normalized_error;
+    track_debug_state.last_nonzero_error = track.data.last_nonzero_error;
+    track_debug_state.line_lost_time_s = track.data.line_lost_time_s;
+    track_debug_state.pid_p_out = track.pid.data.p_out;
+    track_debug_state.pid_i_out = track.pid.data.i_out;
+    track_debug_state.pid_d_out = track.pid.data.d_out;
+    track_debug_state.pid_output = track.pid.data.output;
+    track_debug_state.base_turn_speed_radps = track.data.turn_speed;
+    track_debug_state.active_turn_limit_radps = turn_limit;
+    track_debug_state.target_forward_speed_mps =
+        chassis.data.target_forward_speed_mps;
+    track_debug_state.target_turn_speed_radps =
+        chassis.data.target_turn_speed_radps;
+    track_debug_state.command_forward_speed_mps =
+        chassis.data.command_forward_speed_mps;
+    track_debug_state.command_turn_speed_radps =
+        chassis.data.command_turn_speed_radps;
+    track_debug_state.measured_forward_speed_mps =
+        chassis.data.forward_speed_mps;
+    track_debug_state.measured_turn_speed_radps =
+        chassis.data.turn_speed_radps;
+    track_debug_state.wheel_speed_scale = chassis.data.wheel_speed_scale;
+    track_debug_state.left_target_speed_mps =
+        wheel_left.data.target_linear_speed_mps;
+    track_debug_state.left_measured_speed_mps =
+        wheel_left.data.linear_speed_mps;
+    track_debug_state.right_target_speed_mps =
+        wheel_right.data.target_linear_speed_mps;
+    track_debug_state.right_measured_speed_mps =
+        wheel_right.data.linear_speed_mps;
+    track_debug_state.final_distance_m = chassis.data.distance_m;
+
+    if (absolute_error > track_debug_state.max_abs_error)
+    {
+        track_debug_state.max_abs_error = absolute_error;
+        track_debug_state.max_error_elapsed_ms =
+            track_debug_state.elapsed_ms;
+        track_debug_state.max_error_black_mask = black_mask;
+        track_debug_state.max_error_signed = track.data.normalized_error;
+        track_debug_state.max_error_forward_speed_mps =
+            chassis.data.command_forward_speed_mps;
+        track_debug_state.max_error_turn_speed_radps =
+            chassis.data.command_turn_speed_radps;
+    }
+    if (absolute_pid_d > track_debug_state.max_abs_pid_d_out)
+        track_debug_state.max_abs_pid_d_out = absolute_pid_d;
+    if (absolute_base_turn >
+        track_debug_state.max_abs_base_turn_speed_radps)
+    {
+        track_debug_state.max_abs_base_turn_speed_radps =
+            absolute_base_turn;
+    }
+    if (absolute_command_turn >
+        track_debug_state.max_abs_command_turn_speed_radps)
+    {
+        track_debug_state.max_abs_command_turn_speed_radps =
+            absolute_command_turn;
+    }
+
+    if ((chassis.data.command_forward_speed_mps > 0.001f) &&
+        (chassis.data.command_forward_speed_mps <
+         track_debug_state.min_command_forward_speed_mps))
+    {
+        track_debug_state.min_command_forward_speed_mps =
+            chassis.data.command_forward_speed_mps;
+    }
+    if (chassis.data.command_forward_speed_mps >
+        track_debug_state.max_command_forward_speed_mps)
+    {
+        track_debug_state.max_command_forward_speed_mps =
+            chassis.data.command_forward_speed_mps;
+    }
+    if (chassis.data.wheel_speed_scale <
+        track_debug_state.min_wheel_speed_scale)
+    {
+        track_debug_state.min_wheel_speed_scale =
+            chassis.data.wheel_speed_scale;
+    }
+    if (left_speed_error > track_debug_state.max_left_speed_error_mps)
+        track_debug_state.max_left_speed_error_mps = left_speed_error;
+    if (right_speed_error > track_debug_state.max_right_speed_error_mps)
+        track_debug_state.max_right_speed_error_mps = right_speed_error;
+    if (track.data.line_lost_time_s >
+        track_debug_state.max_line_lost_time_s)
+    {
+        track_debug_state.max_line_lost_time_s =
+            track.data.line_lost_time_s;
+    }
+
+    if (line_lost)
+    {
+        if (track_debug_state.line_lost_active == 0U)
+            track_debug_state.line_lost_event_count++;
+        track_debug_state.line_lost_active = 1U;
+        track_debug_state.line_lost_sample_count++;
+    }
+    else
+    {
+        track_debug_state.line_lost_active = 0U;
+    }
+    if (outer_sensor_only)
+        track_debug_state.outer_sensor_sample_count++;
+    if (absolute_error >= 1.0f)
+        track_debug_state.large_error_sample_count++;
+    if (absolute_target_turn >= (turn_limit - 0.002f))
+        track_debug_state.turn_saturation_sample_count++;
+    if (track.data.direction_change_count >
+        track_debug_state.max_direction_change_count)
+    {
+        track_debug_state.max_direction_change_count =
+            track.data.direction_change_count;
+    }
+
+    for (channel = 0U; channel < 8U; ++channel)
+    {
+        if ((black_mask & (1UL << channel)) != 0U)
+            track_debug_state.sensor_hit_count[channel]++;
+    }
+    if (black_count <= 8U)
+        track_debug_state.black_count_histogram[black_count]++;
+}
+
+static void trackDebugStop(uint32_t stop_tick)
+{
+    track_debug_state.active = 0U;
+    track_debug_state.elapsed_ms = stop_tick - track_start_tick;
+    track_debug_state.stop_reason = track_stop_reason;
+    track_debug_state.final_distance_m = track_stop_distance_m;
 }
 
 static bool trackModeIsSupported(uint8_t selected_mode)
@@ -1395,6 +1596,7 @@ static void trackStart(uint32_t start_tick)
     taskEXIT_CRITICAL();
     track_slow_until_tick = start_tick;
     track_forward_speed_command = 0.0f;
+    ball_chassis_acceleration_mps2 = 0.0f;
     requirement4_curve_detect_count = 0U;
     track_finish_line_detect_count = 0U;
     track_finish_last_mask = 0U;
@@ -1415,6 +1617,7 @@ static void trackStart(uint32_t start_tick)
     track_finish_reverse_active = false;
     track_finish_reverse_start_distance_m = 0.0f;
     track_finish_reverse_start_tick = 0U;
+    trackDebugReset();
     track_running = true;
     led_red.on(&led_red);
 }
@@ -1428,6 +1631,7 @@ static void trackStop(uint32_t stop_tick)
     track_stop_distance_m = chassis_data.distance_m;
     track.pid.reset(&track.pid);
     track_forward_speed_command = 0.0f;
+    ball_chassis_acceleration_mps2 = 0.0f;
     taskENTER_CRITICAL();
     if (!track_timer_stopped)
         track_elapsed_ms = stop_tick - track_start_tick;
@@ -1435,6 +1639,7 @@ static void trackStop(uint32_t stop_tick)
     track_timer_stopped = true;
     taskEXIT_CRITICAL();
     track_running = false;
+    trackDebugStop(stop_tick);
     led_red.off(&led_red);
 }
 
@@ -1511,6 +1716,7 @@ static float trackLimitForwardSpeed(float requested_speed_mps)
 static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s)
 {
     float maximum_step;
+    float previous_speed_mps = track_forward_speed_command;
     bool stable_profile = trackModeUsesStableProfile(mode);
     bool ball_lap_profile = trackModeUsesBallLapProfile(mode);
 
@@ -1549,6 +1755,16 @@ static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s)
     }
 
     track_forward_speed_command = target_speed_mps;
+    /* 使用限加减速后的速度指令计算前馈，匀速时自动回零。 */
+    if (stable_profile)
+    {
+        ball_chassis_acceleration_mps2 =
+            (track_forward_speed_command - previous_speed_mps) / dt_s;
+    }
+    else
+    {
+        ball_chassis_acceleration_mps2 = 0.0f;
+    }
     return track_forward_speed_command;
 }
 
@@ -1611,7 +1827,16 @@ static void keyA07HandleInterrupt(void)
         return;
 
     key_a07_last_toggle_tick = now_tick;
-    led_green.toggle(&led_green);
+    if (ball_pid_ram.enabled != 0U)
+    {
+        ball_pid_ram.enabled = 0U;
+        led_green.off(&led_green);
+    }
+    else
+    {
+        ball_pid_ram.enabled = 1U;
+        led_green.on(&led_green);
+    }
 }
 
 static void key1ProcessEvents(void)
