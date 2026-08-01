@@ -23,13 +23,26 @@ typedef struct
 {
     int32_t error;
     float normalized_error;
+    float control_error;
     float last_nonzero_error;
     float line_lost_time_s;
+    float all_black_time_s;
     float turn_speed;
+    uint32_t raw_black_mask;
     uint32_t black_mask;
+    uint32_t black_mask_history[3];
+    uint32_t selected_black_mask;
     uint8_t black_count;
     uint8_t direction_change_count;
+    uint8_t black_history_count;
+    uint8_t black_run_count;
+    uint8_t selection_flags;
 } TrackData_t;
+
+#define TRACK_SELECTION_FLAG_RAW_FILTERED        0x01U
+#define TRACK_SELECTION_FLAG_DIRECTION_HELD      0x02U
+#define TRACK_SELECTION_FLAG_DIRECTION_CONFIRMED 0x04U
+#define TRACK_SELECTION_FLAG_JUMP_REJECTED       0x08U
 
 struct Track
 {

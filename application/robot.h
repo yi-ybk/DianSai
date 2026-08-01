@@ -107,9 +107,65 @@ typedef struct
     float final_distance_m;                /**< 当前或最终累计距离 */
 } TrackDebugState_t;
 
+#define TRACK_TRACE_CAPACITY 480U
+#define TRACK_TRACE_MAGIC    0x314B5254U
+#define TRACK_TRACE_VERSION  3U
+
+#define TRACK_TRACE_STATUS_BLACK_COUNT_MASK 0x0FU
+#define TRACK_TRACE_STATUS_LINE_LOST        0x10U
+#define TRACK_TRACE_STATUS_OUTER_SENSOR     0x20U
+#define TRACK_TRACE_STATUS_TURN_SATURATED   0x40U
+#define TRACK_TRACE_STATUS_WHEEL_SCALED     0x80U
+
+/** @brief 单个循迹轨迹采样点，采用定点数压缩以节省RAM */
+typedef struct
+{
+    uint16_t elapsed_ms;                   /**< 相对本圈启动时刻(ms) */
+    uint16_t distance_mm;                  /**< 底盘累计距离绝对值(mm) */
+    uint8_t black_mask;                    /**< 8路灰度掩码 */
+    uint8_t status;                        /**< 低4位为黑线宽度，高4位为状态标志 */
+    int16_t normalized_error_x1000;        /**< 归一化误差乘1000 */
+    int16_t control_error_x1000;           /**< 限速后的PID控制误差乘1000 */
+    int16_t pid_output_mradps;             /**< 循迹PID输出乘1000 */
+    int16_t command_forward_mmps;          /**< 实际前进指令(mm/s) */
+    int16_t command_turn_mradps;           /**< 实际转向指令(mrad/s) */
+    uint8_t raw_black_mask;                /**< 未滤波的8路灰度掩码 */
+    uint8_t selected_black_mask;           /**< 本次算法选择的连续黑线段 */
+    uint8_t black_run_count;               /**< 滤波掩码中的连续黑线段数量 */
+    uint8_t selection_state;               /**< 高4位选择标志，低4位反向确认计数 */
+} TrackTraceSample_t;
+
+/** @brief 循迹轨迹头，描述RAM采样区的有效范围和运行状态 */
+typedef struct
+{
+    uint32_t magic;                        /**< 固定为TRACK_TRACE_MAGIC */
+    uint32_t version;                      /**< 数据格式版本 */
+    uint32_t sample_size;                  /**< 单个采样点字节数 */
+    uint32_t capacity;                     /**< 最大采样点数 */
+    uint32_t count;                        /**< 当前有效采样点数 */
+    uint32_t write_index;                  /**< 环形缓冲区下一写入位置 */
+    uint32_t sample_period_ms;             /**< 采样周期(ms) */
+    uint32_t mode;                         /**< 本圈运行模式 */
+    uint32_t active;                       /**< 1：正在记录 */
+    uint32_t complete;                     /**< 1：已正常进入停止流程 */
+    uint32_t overflow;                     /**< 1：采样区已满，后续数据未记录 */
+    uint32_t start_tick_ms;                /**< 启动时系统节拍 */
+    uint32_t last_sample_tick_ms;          /**< 最近采样时系统节拍 */
+    uint32_t stop_tick_ms;                 /**< 停止时系统节拍 */
+    uint32_t capture_call_count;           /**< 记录期间控制循环调用次数 */
+} TrackTraceHeader_t;
+
+/** @brief 连续RAM轨迹存储区，可由J-Link一次性读出 */
+typedef struct
+{
+    TrackTraceHeader_t header;
+    TrackTraceSample_t samples[TRACK_TRACE_CAPACITY];
+} TrackTraceStore_t;
+
 extern volatile BallPidRamConfig_t ball_pid_ram;
 extern volatile BallPidRamState_t ball_pid_state;
 extern volatile TrackDebugState_t track_debug_state;
+extern volatile TrackTraceStore_t track_trace_store;
 extern volatile uint32_t ball_pid_reset_request;
 extern volatile float ball_target;
 extern volatile float ball_chassis_acceleration_mps2;

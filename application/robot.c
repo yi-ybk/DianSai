@@ -40,6 +40,10 @@ static void trackStop(uint32_t stop_tick);
 static void trackDebugReset(void);
 static void trackDebugCapture(uint32_t now_tick);
 static void trackDebugStop(uint32_t stop_tick);
+static void trackTraceReset(uint32_t start_tick);
+static void trackTraceCapture(uint32_t now_tick, float turn_limit);
+static int16_t trackTraceQuantizeSigned(float value, float scale);
+static uint16_t trackTraceQuantizeUnsigned(float value, float scale);
 static float trackLimitForwardSpeed(float requested_speed_mps);
 static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s);
 static float trackWrapAngleRad(float angle_rad);
@@ -221,6 +225,10 @@ volatile float ball_real = 0.0f;
 #define KEY_A07_DEBOUNCE_MS               50U
 #define OLED_COUNTER_INTERVAL_MS           1000U
 #define TRACK_CONTROL_DT_S                 0.005f
+#define TRACK_TRACE_FAST_PERIOD_MS         45U
+#define TRACK_TRACE_STABLE_PERIOD_MS       65U
+#define TRACK_TRACE_BALL_LAP_PERIOD_MS     10U
+#define TRACK_TRACE_FREEZE_LOST_TIME_S     0.40f
 #define TRACK_START_REQUEST_MAX_AGE_MS        50U
 #define TRACK_CORNER_EXIT_HOLD_MS          350U
 #define TRACK_FORWARD_ACCEL_MPS2           1.10f
@@ -241,10 +249,14 @@ volatile float ball_real = 0.0f;
 #define TRACK_STABLE_SOFT_START_MS          2000U
 #define TRACK_STABLE_MAX_RUN_TIME_MS       30000U
 #define TRACK_BALL_LAP_BASE_SPEED_MPS       0.30f
-#define TRACK_BALL_LAP_MAX_TURN_SPEED       0.75f
-#define TRACK_BALL_LAP_TURN_GAIN             1.20f
-#define TRACK_BALL_LAP_FORWARD_ACCEL_MPS2   0.25f
+#define TRACK_BALL_LAP_MAX_TURN_SPEED       1.25f
+#define TRACK_BALL_LAP_STRAIGHT_TURN_GAIN    0.90f
+#define TRACK_BALL_LAP_MEDIUM_TURN_GAIN      1.25f
+#define TRACK_BALL_LAP_CURVE_TURN_GAIN       1.50f
+#define TRACK_BALL_LAP_FORWARD_ACCEL_MPS2   0.60f
 #define TRACK_BALL_LAP_FORWARD_DECEL_MPS2   0.25f
+#define TRACK_BALL_LAP_LOST_DECEL_MPS2       1.20f
+#define TRACK_BALL_LAP_LOST_SPEED_SCALE       0.07f
 #define BALL_HOST_FRAME_HEADER              0xA5U
 #define BALL_HOST_FRAME_TAIL                0x5AU
 #define BALL_HOST_FRAME_LENGTH              7U
@@ -348,8 +360,12 @@ volatile BallPidRamConfig_t ball_pid_ram = {
 };
 volatile BallPidRamState_t ball_pid_state = {0};
 volatile TrackDebugState_t track_debug_state = {0};
+volatile TrackTraceStore_t track_trace_store = {0};
 volatile uint32_t ball_pid_reset_request = 0U;
 volatile float now_angel = BALL_SERVO_CENTER_ANGLE_DEG;
+
+typedef char TrackTraceSampleSizeCheck[
+    (sizeof(TrackTraceSample_t) == 20U) ? 1 : -1];
 
 static float ball_pid_integral_px_s = 0.0f;
 static float ball_pid_previous_measurement_px = 0.0f;
@@ -1030,6 +1046,136 @@ static void trackDebugReset(void)
     track_debug_state.mode = mode;
     track_debug_state.min_command_forward_speed_mps = 1000.0f;
     track_debug_state.min_wheel_speed_scale = 1.0f;
+    trackTraceReset(track_start_tick);
+}
+
+static void trackTraceReset(uint32_t start_tick)
+{
+    volatile TrackTraceHeader_t *header = &track_trace_store.header;
+
+    memset((void *)header, 0, sizeof(*header));
+    header->magic = TRACK_TRACE_MAGIC;
+    header->version = TRACK_TRACE_VERSION;
+    header->sample_size = sizeof(TrackTraceSample_t);
+    header->capacity = TRACK_TRACE_CAPACITY;
+    header->sample_period_ms = trackModeUsesBallLapProfile(mode) ?
+                               TRACK_TRACE_BALL_LAP_PERIOD_MS :
+                               (trackModeUsesStableProfile(mode) ?
+                                TRACK_TRACE_STABLE_PERIOD_MS :
+                                TRACK_TRACE_FAST_PERIOD_MS);
+    header->mode = mode;
+    header->active = 1U;
+    header->start_tick_ms = start_tick;
+    header->last_sample_tick_ms =
+        start_tick - header->sample_period_ms;
+}
+
+static int16_t trackTraceQuantizeSigned(float value, float scale)
+{
+    float scaled;
+
+    if (value != value)
+        return 0;
+    scaled = value * scale;
+    if (scaled > 32767.0f)
+        return 32767;
+    if (scaled < -32768.0f)
+        return -32768;
+    scaled += (scaled >= 0.0f) ? 0.5f : -0.5f;
+    return (int16_t)scaled;
+}
+
+static uint16_t trackTraceQuantizeUnsigned(float value, float scale)
+{
+    float scaled;
+
+    if ((value != value) || (value <= 0.0f))
+        return 0U;
+    scaled = value * scale;
+    if (scaled >= 65535.0f)
+        return 65535U;
+    return (uint16_t)(scaled + 0.5f);
+}
+
+static void trackTraceCapture(uint32_t now_tick, float turn_limit)
+{
+    volatile TrackTraceHeader_t *header = &track_trace_store.header;
+    volatile TrackTraceSample_t *sample;
+    float absolute_distance = chassis.data.distance_m;
+    float absolute_target_turn = chassis.data.target_turn_speed_radps;
+    uint32_t elapsed_ms;
+    uint32_t black_count;
+    uint8_t black_mask;
+    uint8_t status;
+    uint8_t direction_change_count;
+
+    if (header->active == 0U)
+        return;
+    header->capture_call_count++;
+    if ((now_tick - header->last_sample_tick_ms) <
+        header->sample_period_ms)
+    {
+        return;
+    }
+    header->last_sample_tick_ms = now_tick;
+    sample = &track_trace_store.samples[header->write_index];
+    elapsed_ms = now_tick - header->start_tick_ms;
+    if (absolute_distance < 0.0f)
+        absolute_distance = -absolute_distance;
+    if (absolute_target_turn < 0.0f)
+        absolute_target_turn = -absolute_target_turn;
+    black_mask = (uint8_t)(track.data.black_mask & 0xFFU);
+    black_count = track.data.black_count;
+    status = (uint8_t)(black_count & TRACK_TRACE_STATUS_BLACK_COUNT_MASK);
+    if (black_count == 0U)
+        status |= TRACK_TRACE_STATUS_LINE_LOST;
+    if ((black_mask == 0x01U) || (black_mask == 0x80U))
+        status |= TRACK_TRACE_STATUS_OUTER_SENSOR;
+    if (absolute_target_turn >= (turn_limit - 0.002f))
+        status |= TRACK_TRACE_STATUS_TURN_SATURATED;
+    if (chassis.data.wheel_speed_scale < 0.999f)
+        status |= TRACK_TRACE_STATUS_WHEEL_SCALED;
+
+    sample->elapsed_ms = (elapsed_ms > 65535U) ?
+                         65535U : (uint16_t)elapsed_ms;
+    sample->distance_mm =
+        trackTraceQuantizeUnsigned(absolute_distance, 1000.0f);
+    sample->black_mask = black_mask;
+    sample->status = status;
+    sample->normalized_error_x1000 =
+        trackTraceQuantizeSigned(track.data.normalized_error, 1000.0f);
+    sample->control_error_x1000 =
+        trackTraceQuantizeSigned(track.data.control_error, 1000.0f);
+    sample->pid_output_mradps =
+        trackTraceQuantizeSigned(track.pid.data.output, 1000.0f);
+    sample->command_forward_mmps = trackTraceQuantizeSigned(
+        chassis.data.command_forward_speed_mps, 1000.0f);
+    sample->command_turn_mradps = trackTraceQuantizeSigned(
+        chassis.data.command_turn_speed_radps, 1000.0f);
+    sample->raw_black_mask = (uint8_t)(track.data.raw_black_mask & 0xFFU);
+    sample->selected_black_mask =
+        (uint8_t)(track.data.selected_black_mask & 0xFFU);
+    sample->black_run_count = track.data.black_run_count;
+    direction_change_count = track.data.direction_change_count;
+    if (direction_change_count > 15U)
+        direction_change_count = 15U;
+    sample->selection_state =
+        (uint8_t)(direction_change_count |
+                  ((track.data.selection_flags & 0x0FU) << 4));
+    header->write_index++;
+    if (header->write_index >= header->capacity)
+        header->write_index = 0U;
+    if (header->count < header->capacity)
+        header->count++;
+    else
+        header->overflow = 1U;
+
+    if (trackModeUsesBallLapProfile(mode) &&
+        (track.data.line_lost_time_s >= TRACK_TRACE_FREEZE_LOST_TIME_S))
+    {
+        header->active = 0U;
+        header->stop_tick_ms = now_tick;
+    }
 }
 
 static void trackDebugCapture(uint32_t now_tick)
@@ -1198,6 +1344,7 @@ static void trackDebugCapture(uint32_t now_tick)
     }
     if (black_count <= 8U)
         track_debug_state.black_count_histogram[black_count]++;
+    trackTraceCapture(now_tick, turn_limit);
 }
 
 static void trackDebugStop(uint32_t stop_tick)
@@ -1206,6 +1353,9 @@ static void trackDebugStop(uint32_t stop_tick)
     track_debug_state.elapsed_ms = stop_tick - track_start_tick;
     track_debug_state.stop_reason = track_stop_reason;
     track_debug_state.final_distance_m = track_stop_distance_m;
+    track_trace_store.header.active = 0U;
+    track_trace_store.header.complete = 1U;
+    track_trace_store.header.stop_tick_ms = stop_tick;
 }
 
 static bool trackModeIsSupported(uint8_t selected_mode)
@@ -1520,12 +1670,21 @@ static void trackRunRequirement4(uint32_t now_tick, float dt_s)
 static void trackRunRequirement5Or6(uint32_t now_tick, float dt_s)
 {
     ChassisData_t chassis_data;
+    float absolute_control_error;
     float distance_m;
     float forward_speed;
     float turn_speed;
 
     turn_speed = track.update(&track, dt_s);
-    turn_speed *= TRACK_BALL_LAP_TURN_GAIN;
+    absolute_control_error = track.data.control_error;
+    if (absolute_control_error < 0.0f)
+        absolute_control_error = -absolute_control_error;
+    if (absolute_control_error < 1.0f)
+        turn_speed *= TRACK_BALL_LAP_STRAIGHT_TURN_GAIN;
+    else if (absolute_control_error < 2.0f)
+        turn_speed *= TRACK_BALL_LAP_MEDIUM_TURN_GAIN;
+    else
+        turn_speed *= TRACK_BALL_LAP_CURVE_TURN_GAIN;
     if (turn_speed > TRACK_BALL_LAP_MAX_TURN_SPEED)
         turn_speed = TRACK_BALL_LAP_MAX_TURN_SPEED;
     else if (turn_speed < -TRACK_BALL_LAP_MAX_TURN_SPEED)
@@ -1663,11 +1822,7 @@ static float trackLimitForwardSpeed(float requested_speed_mps)
     if (ball_lap_profile)
     {
         if (track.data.black_count == 0U)
-            speed_scale = 0.07f;
-        else if (outer_sensor_only || (absolute_error >= 2.0f))
-            speed_scale = 0.90f;
-        else if (absolute_error >= 1.0f)
-            speed_scale = 0.95f;
+            speed_scale = TRACK_BALL_LAP_LOST_SPEED_SCALE;
     }
     else if (stable_profile)
     {
@@ -1700,14 +1855,13 @@ static float trackLimitForwardSpeed(float requested_speed_mps)
             speed_scale = TRACK_MODE2_LARGE_ERROR_SPEED_SCALE;
     }
 
-    if (((int32_t)(track_slow_until_tick - now_tick) > 0) &&
-        (speed_scale > (ball_lap_profile ? 0.90f :
-                        (stable_profile ? 0.46f :
-                         TRACK_MODE2_CORNER_HOLD_SPEED_SCALE))))
+    if ((!ball_lap_profile) &&
+        ((int32_t)(track_slow_until_tick - now_tick) > 0) &&
+        (speed_scale > (stable_profile ? 0.46f :
+                        TRACK_MODE2_CORNER_HOLD_SPEED_SCALE)))
     {
-        speed_scale = ball_lap_profile ? 0.90f :
-                      (stable_profile ? 0.46f :
-                       TRACK_MODE2_CORNER_HOLD_SPEED_SCALE);
+        speed_scale = stable_profile ? 0.46f :
+                      TRACK_MODE2_CORNER_HOLD_SPEED_SCALE;
     }
 
     return requested_speed_mps * speed_scale;
@@ -1717,6 +1871,7 @@ static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s)
 {
     float maximum_step;
     float previous_speed_mps = track_forward_speed_command;
+    float deceleration_mps2;
     bool stable_profile = trackModeUsesStableProfile(mode);
     bool ball_lap_profile = trackModeUsesBallLapProfile(mode);
 
@@ -1746,10 +1901,13 @@ static float trackSmoothForwardSpeed(float target_speed_mps, float dt_s)
     }
     else
     {
-        maximum_step =
-            (ball_lap_profile ? TRACK_BALL_LAP_FORWARD_DECEL_MPS2 :
-             (stable_profile ? TRACK_STABLE_FORWARD_DECEL_MPS2 :
-              TRACK_FORWARD_DECEL_MPS2)) * dt_s;
+        deceleration_mps2 =
+            ball_lap_profile ? TRACK_BALL_LAP_FORWARD_DECEL_MPS2 :
+            (stable_profile ? TRACK_STABLE_FORWARD_DECEL_MPS2 :
+             TRACK_FORWARD_DECEL_MPS2);
+        if (ball_lap_profile && (track.data.black_count == 0U))
+            deceleration_mps2 = TRACK_BALL_LAP_LOST_DECEL_MPS2;
+        maximum_step = deceleration_mps2 * dt_s;
         if ((track_forward_speed_command - target_speed_mps) > maximum_step)
             target_speed_mps = track_forward_speed_command - maximum_step;
     }

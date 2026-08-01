@@ -58,6 +58,27 @@
             "problemMatcher": []
         },
         {
+            "label": "J-Link: 读取循迹RAM",
+            "type": "shell",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/.vscode/read-track-ram.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        },
+        {
             "label": "MSPM0: 一键编译并烧录",
             "type": "shell",
             "command": "powershell.exe",

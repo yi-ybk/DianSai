@@ -1,9 +1,12 @@
 #include "track.h"
 #include <string.h>
 
-#define TRACK_DIRECTION_CHANGE_CONFIRM_SAMPLES 5U
+#define TRACK_CLEAN_DIRECTION_CHANGE_CONFIRM_SAMPLES 2U
+#define TRACK_AMBIGUOUS_DIRECTION_CHANGE_CONFIRM_SAMPLES 20U
 #define TRACK_SEARCH_START_DELAY_S             0.15f
 #define TRACK_SEARCH_FULL_DELAY_S              0.35f
+#define TRACK_ALL_BLACK_LOST_DELAY_S            0.08f
+#define TRACK_CONTROL_ERROR_SLEW_RATE_PER_S     50.0f
 
 static void TrackBindMethods(Track_t *track);
 static bool TrackConfigIsValid(const TrackInitConfig_t *config);
@@ -31,6 +34,9 @@ bool TrackInit(Track_t *track, const TrackInitConfig_t *config)
 float TrackCalculateError(Track_t *track)
 {
     uint32_t black_mask;
+    uint32_t raw_black_mask;
+    uint32_t run_black_mask = 0U;
+    uint32_t selected_black_mask = 0U;
     uint8_t channel;
     float run_error_sum = 0.0f;
     float run_error;
@@ -40,15 +46,44 @@ float TrackCalculateError(Track_t *track)
     float last_normalized_error;
     uint8_t run_black_count = 0U;
     uint8_t selected_black_count = 0U;
+    uint8_t black_run_count = 0U;
+    uint8_t direction_change_confirm_samples;
     bool run_selected = false;
     bool direction_change_confirmed = false;
+    bool same_direction_reacquisition = false;
 
     if ((track == NULL) || (!track->initialized) || (track->gray == NULL))
         return 0.0f;
 
     last_normalized_error = track->data.normalized_error;
-    track->gray->update((Gray_t *)track->gray);
-    black_mask = track->gray->get_black_mask((Gray_t *)track->gray);
+    raw_black_mask =
+        track->gray->get_black_mask((Gray_t *)track->gray);
+    track->data.raw_black_mask = raw_black_mask;
+    if (track->data.black_history_count < 3U)
+    {
+        track->data.black_mask_history[track->data.black_history_count] =
+            raw_black_mask;
+        track->data.black_history_count++;
+        black_mask = raw_black_mask;
+    }
+    else
+    {
+        track->data.black_mask_history[0] =
+            track->data.black_mask_history[1];
+        track->data.black_mask_history[1] =
+            track->data.black_mask_history[2];
+        track->data.black_mask_history[2] = raw_black_mask;
+        black_mask =
+            (track->data.black_mask_history[0] &
+             track->data.black_mask_history[1]) |
+            (track->data.black_mask_history[0] &
+             track->data.black_mask_history[2]) |
+            (track->data.black_mask_history[1] &
+             track->data.black_mask_history[2]);
+    }
+    track->data.selection_flags = 0U;
+    if (black_mask != raw_black_mask)
+        track->data.selection_flags |= TRACK_SELECTION_FLAG_RAW_FILTERED;
 
     for (channel = 0U; channel <= track->init_config.channel_count; ++channel)
     {
@@ -56,12 +91,14 @@ float TrackCalculateError(Track_t *track)
             (black_mask & (1UL << channel)))
         {
             run_error_sum += track->init_config.weights[channel];
+            run_black_mask |= 1UL << channel;
             run_black_count++;
             continue;
         }
 
         if (run_black_count > 0U)
         {
+            black_run_count++;
             run_error = run_error_sum / (float)run_black_count;
             run_distance = run_error - last_normalized_error;
             if (run_distance < 0.0f)
@@ -74,11 +111,13 @@ float TrackCalculateError(Track_t *track)
             {
                 selected_error = run_error;
                 selected_black_count = run_black_count;
+                selected_black_mask = run_black_mask;
                 best_run_distance = run_distance;
                 run_selected = true;
             }
 
             run_error_sum = 0.0f;
+            run_black_mask = 0U;
             run_black_count = 0U;
         }
     }
@@ -102,27 +141,37 @@ float TrackCalculateError(Track_t *track)
          * A fold or a reflection can briefly create a plausible run on the
          * opposite side of the array.  Do not let one or two samples reverse
          * the remembered recovery direction.  A real crossing of the centre
-         * persists and is accepted after three consecutive samples.
+         * A single clean run is accepted quickly so the car can unwind its
+         * steering at curve exit.  Multiple separated runs need longer
+         * confirmation because they are normally reflections or track edges.
          */
         if (((track->data.last_nonzero_error > 0.1f) &&
              (selected_error < -0.1f)) ||
             ((track->data.last_nonzero_error < -0.1f) &&
              (selected_error > 0.1f)))
         {
+            direction_change_confirm_samples =
+                (black_run_count == 1U) ?
+                TRACK_CLEAN_DIRECTION_CHANGE_CONFIRM_SAMPLES :
+                TRACK_AMBIGUOUS_DIRECTION_CHANGE_CONFIRM_SAMPLES;
             if (track->data.direction_change_count <
-                TRACK_DIRECTION_CHANGE_CONFIRM_SAMPLES)
+                direction_change_confirm_samples)
             {
                 track->data.direction_change_count++;
             }
 
             if (track->data.direction_change_count <
-                TRACK_DIRECTION_CHANGE_CONFIRM_SAMPLES)
+                direction_change_confirm_samples)
             {
                 selected_error = last_normalized_error;
+                track->data.selection_flags |=
+                    TRACK_SELECTION_FLAG_DIRECTION_HELD;
             }
             else
             {
                 direction_change_confirmed = true;
+                track->data.selection_flags |=
+                    TRACK_SELECTION_FLAG_DIRECTION_CONFIRMED;
                 track->data.direction_change_count = 0U;
             }
         }
@@ -134,15 +183,28 @@ float TrackCalculateError(Track_t *track)
         error_jump = selected_error - last_normalized_error;
         if (error_jump < 0.0f)
             error_jump = -error_jump;
-        if ((error_jump > 1.5f) && (!direction_change_confirmed))
+        same_direction_reacquisition =
+            (track->data.line_lost_time_s > 0.0f) &&
+            (((track->data.last_nonzero_error > 0.1f) &&
+              (selected_error > 0.1f)) ||
+             ((track->data.last_nonzero_error < -0.1f) &&
+              (selected_error < -0.1f)));
+        if ((error_jump > 1.5f) &&
+            (!direction_change_confirmed) &&
+            (!same_direction_reacquisition))
         {
             /*
              * A real line cannot cross several sensors in one control period.
              * Treat such a sample as noise so lost-line recovery keeps turning
-             * in the last valid direction.
+             * in the last valid direction.  Once the line has already been
+             * lost, accept a same-direction reappearance immediately; sharp
+             * bends commonly re-enter through the remembered outer sensor.
              */
             run_selected = false;
             selected_black_count = 0U;
+            selected_black_mask = 0U;
+            track->data.selection_flags |=
+                TRACK_SELECTION_FLAG_JUMP_REJECTED;
         }
     }
     else
@@ -152,6 +214,8 @@ float TrackCalculateError(Track_t *track)
 
     track->data.black_mask = black_mask;
     track->data.black_count = selected_black_count;
+    track->data.black_run_count = black_run_count;
+    track->data.selected_black_mask = selected_black_mask;
 
     if (run_selected)
     {
@@ -195,16 +259,38 @@ float TrackUpdate(Track_t *track, float dt)
     float error;
     float control_error;
     float minimum_search_error;
+    float maximum_error_step;
     float pid_output;
+    uint32_t full_black_mask;
+    bool all_black;
 
     if ((track == NULL) || (!track->initialized) || !(dt > 0.0f))
         return 0.0f;
 
     error = TrackCalculateError(track);
-    control_error = error;
+    maximum_error_step = TRACK_CONTROL_ERROR_SLEW_RATE_PER_S * dt;
+    control_error = track->data.control_error;
+    if ((error - control_error) > maximum_error_step)
+        control_error += maximum_error_step;
+    else if ((control_error - error) > maximum_error_step)
+        control_error -= maximum_error_step;
+    else
+        control_error = error;
+    full_black_mask =
+        (1UL << track->init_config.channel_count) - 1UL;
+    all_black = (track->data.black_mask == full_black_mask);
 
-    if (track->data.black_count == 0U)
+    if (all_black)
+        track->data.all_black_time_s += dt;
+    else
+        track->data.all_black_time_s = 0.0f;
+
+    if ((track->data.black_count == 0U) ||
+        (track->data.all_black_time_s >=
+         TRACK_ALL_BLACK_LOST_DELAY_S))
     {
+        if (all_black)
+            track->data.black_count = 0U;
         track->data.line_lost_time_s += dt;
         minimum_search_error = 0.0f;
         if (track->data.line_lost_time_s >= TRACK_SEARCH_FULL_DELAY_S)
@@ -230,6 +316,7 @@ float TrackUpdate(Track_t *track, float dt)
 
     pid_output = track->pid.calculate(&track->pid, 0, control_error, dt);
 
+    track->data.control_error = control_error;
     track->data.turn_speed = pid_output;
 
     if (track->data.turn_speed > track->init_config.max_turn_speed)

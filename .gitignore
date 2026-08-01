@@ -28,6 +28,8 @@ tmp/
 .vscode/*.opendb
 .vscode/.cache/
 .vscode/*.log
+__pycache__/
+*.pyc
 .clangd
 .theia/
 .codex/
