@@ -100,6 +100,26 @@ USARTInstance *USARTRegister(USART_Init_Config_s *init_config)
     return instance;
 }
 
+/**
+ * @brief 判断UART句柄是否已经被USART模块注册
+ * @param usart_handle 待查询的UART句柄
+ * @return bool 已注册返回true，否则返回false
+ */
+bool USARTIsRegistered(const UART_HandleTypeDef *usart_handle)
+{
+    uint8_t i;
+
+    if (usart_handle == NULL)
+        return false;
+
+    for (i = 0U; i < idx; i++)
+    {
+        if (usart_instance[i]->usart_handle == usart_handle)
+            return true;
+    }
+    return false;
+}
+
 /* @todo 当前仅进行了形式上的封装,后续要进一步考虑是否将module的行为与bsp完全分离 */
 void USARTSend(USARTInstance *_instance, uint8_t *send_buf, uint16_t send_size, USART_TRANSFER_MODE mode)
 {

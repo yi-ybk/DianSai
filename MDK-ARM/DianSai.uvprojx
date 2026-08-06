@@ -338,7 +338,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F407xx,STM32_THREAD_SAFE_STRATEGY=4</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F;../Middlewares/Third_Party/SEGGER/RTT;../Middlewares/Third_Party/SEGGER/Config;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../bsp/tim;../bsp/can;../bsp/pwm;../bsp/spi;../bsp/usart;../bsp/gpio;../bsp/iic;../bsp/log;../bsp/dwt;../application/chassis;../application/gimbal;../application;../module/imu;../module/led;../module/encoder;../module/key;../module/pid;../module/motor;../module/gray;../module/algorithm;../module/oled;../module/stepmotor;../module/wheel;../module/zhangdatou_42;../Drivers/CMSIS/DSP/Include/dsp;../Drivers/CMSIS/DSP/Include</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F;../Middlewares/Third_Party/SEGGER/RTT;../Middlewares/Third_Party/SEGGER/Config;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../bsp/tim;../bsp/can;../bsp/pwm;../bsp/spi;../bsp/usart;../bsp/gpio;../bsp/iic;../bsp/log;../bsp/dwt;../application/chassis;../application/gimbal;../application/slaver;../application;../module/imu;../module/led;../module/encoder;../module/key;../module/pid;../module/motor;../module/gray;../module/algorithm;../module/oled;../module/stepmotor;../module/wheel;../module/zhangdatou_42;../Drivers/CMSIS/DSP/Include/dsp;../Drivers/CMSIS/DSP/Include</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -1287,6 +1287,16 @@
               <FileName>gimbal.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\application\gimbal\gimbal.h</FilePath>
+            </File>
+            <File>
+              <FileName>slaver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\application\slaver\slaver.c</FilePath>
+            </File>
+            <File>
+              <FileName>slaver.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\application\slaver\slaver.h</FilePath>
             </File>
             <File>
               <FileName>robot.c</FileName>
